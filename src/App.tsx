@@ -17,7 +17,6 @@ import {
   defaults,
   dateIST,
   editionIST,
-  modeledReading,
   profileSchema,
   sourceURL,
   spans,
@@ -27,13 +26,13 @@ import {
   type City,
   type Profile,
 } from './domain'
-import { makePlan } from './plan'
-import { makeDecision } from './choices'
+import { makeHouseholdPlan } from './choices'
 import { decisionContext } from './explanationFacts'
 import { Forecast } from './Forecast'
 import { Guide } from './Guide'
 import { ExplanationBox } from './Explanation'
 import { Modal, ProfileForm } from './Profile'
+import { conditionsView } from './conditions'
 import { readLocal, saveLocal, useAir, type Status } from './useAir'
 
 function Mark() {
@@ -42,14 +41,6 @@ function Mark() {
       <path d="M2 13 C15 -2 26 18 42 4 C28 25 16 6 2 13ZM2 23 C15 8 26 28 42 14 C28 35 16 16 2 23ZM2 33 C15 18 26 38 42 24 C28 45 16 26 2 33Z" />
     </svg>
   )
-}
-const conditionLabels: Record<Status, string> = {
-  loading: 'Loading conditions',
-  refreshing: 'Refreshing conditions',
-  ready: 'Modeled estimate',
-  offline: 'Offline',
-  rate: 'Provider rate limit',
-  source: 'Provider unavailable',
 }
 function Conditions({
   data,
@@ -65,21 +56,7 @@ function Conditions({
   city: City
 }) {
   const [source, setSource] = useState(false)
-  const old = !!data && stale(data, now)
-  const reading = modeledReading(data, now)
-  const severity = reading && category(reading.aqi)
-  const label = old ? 'Saved conditions' : reading?.kind === 'earlier' ? 'Earlier modeled reading' :
-    reading?.kind === 'upcoming' ? 'Upcoming modeled reading' :
-    reading?.kind === 'current' ? 'Current conditions' : 'Regional model'
-  const state = status === 'ready' && old ? 'Stale estimate' : conditionLabels[status]
-  const checking = status === 'loading' || status === 'refreshing'
-  const heading =
-    severity?.label ??
-    (status === 'loading'
-      ? 'Awaiting model data'
-      : data
-        ? 'AQI unavailable'
-        : 'No current reading')
+  const { reading, label, state, heading, checking, alert } = conditionsView(data, status, now)
   const val = (v: number | null | undefined) =>
     v == null ? '—' : Number(v.toFixed(1))
   return (
@@ -99,7 +76,6 @@ function Conditions({
           <div className="condition-state" role="status">
             <i className={checking ? 'pending' : ''} />
             {state}
-            {old && state !== 'Stale estimate' ? ' · Stale estimate' : ''}
           </div>
         </div>
         <div className="particles">
@@ -140,22 +116,9 @@ function Conditions({
           <Info size={15} /> Source details
         </button>
       </div>
-      {(old || (!checking && status !== 'ready')) && (
+      {alert && (
         <div className="condition-alert" role="status">
-          <span>
-            {status === 'offline'
-              ? 'Check your connection.'
-              : status === 'rate'
-                ? 'The provider is limiting requests. Try again in a minute.'
-                : status === 'source'
-                  ? 'The latest bulletin could not be retrieved.'
-                  : data?.notice
-                    ? 'The saved bulletin needs a fresh provider check.'
-                    : 'The source or retrieval time is outside the freshness window.'}{' '}
-            {data
-              ? 'Showing the last available estimate.'
-              : 'General household actions are available below.'}
-          </span>
+          <span>{alert}</span>
           <button onClick={retry} disabled={status === 'refreshing'}>
             <RefreshCw size={14} /> Retry
           </button>
@@ -235,12 +198,11 @@ function Edition({
   const [conflict, setConflict] = useState(false)
   const old = !!data && stale(data, now)
   const evidence = old ? null : data
-  const plan = makePlan(evidence, profile, now)
-  const decision = makeDecision(evidence, profile, now, plan)
+  const { timeline, decision } = makeHouseholdPlan(evidence, profile, now)
   const context = decisionContext(evidence, profile, decision, now)
   const day = (start: number) =>
     dateIST(start) === dateIST(now) ? 'Today' : 'Tomorrow'
-  const warning = plan.find((a) => a.caution && a.kind === 'outing')
+  const { outing } = decision
   return (
     <main id="bulletin">
       <div className="edition-line">
@@ -288,17 +250,17 @@ function Edition({
             </span>
             <ArrowUpRight size={14} />
           </button>
-          {warning && warning.start !== plan[0].start && (
-            <a className="outing-warning" href={'#period-' + warning.start}>
-              <strong>{day(warning.start)} · {warning.period} outing</strong>
+          {outing.caution && outing.start !== timeline[0].start && (
+            <a className="outing-warning" href={'#period-' + outing.start}>
+              <strong>{day(outing.start)} · {outing.period} outing</strong>
               <span>
-                {warning.forecast.high !== null && category(warning.forecast.high).label + ' forecast. '}
-                {warning.title}.
+                {outing.forecast.high !== null && category(outing.forecast.high).label + ' forecast. '}
+                {outing.title}.
               </span>
             </a>
           )}
           <ol className="timeline">
-            {plan.map((a) => {
+            {timeline.map((a) => {
               const Icon = icons[a.period]
               return (
                 <li key={a.start} id={'period-' + a.start} tabIndex={-1}>

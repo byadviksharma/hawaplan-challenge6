@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { makeDecision, type HouseholdDecision } from '../src/choices'
+import { makeDecision, makeHouseholdPlan, type HouseholdDecision } from '../src/choices'
 import { hour, type Bulletin, type Profile } from '../src/domain'
+import { makePlan } from '../src/plan'
 
 const now = Date.parse('2026-11-24T08:30:00+05:30')
 const afternoon = Date.parse('2026-11-24T12:30:00+05:30')
@@ -23,6 +24,56 @@ const contrast = bulletin([...hazardous, ...lower])
 function goals(d: HouseholdDecision, option?: string) {
   return d.evidence.filter((e) => e.option === option && e.role === 'fit').map((e) => e.id)
 }
+
+describe('household plan and selected outing', () => {
+  const allPeriods = bulletin([...period(now, [55, 55, 55, 55]), ...hazardous, ...lower])
+  it.each([
+    ['another household’s evening errands', makePlan(contrast, older, now)],
+    ['an empty timeline', []],
+    ['a malformed outing', [{ kind: 'outing' }]],
+  ] as const)('uses the household inputs when JavaScript passes %s as a fourth argument', (_, unrelated) => {
+    // @ts-expect-error A caller can supply only the bulletin, household and instant.
+    const decision = makeDecision(contrast, family, now, unrelated)
+    expect(decision.outing).toMatchObject({
+      period: 'Afternoon', kind: 'outing', title: 'Move playtime indoors', caution: true,
+    })
+    expect(decision.recommended.id).toBe('indoor')
+    expect(decision.basis).toContain('352–355 US AQI (Hazardous')
+  })
+
+  it.each([
+    ['Morning', '06:00', 'Build breaks into playtime'],
+    ['Afternoon', '12:00', 'Move playtime indoors'],
+    ['Evening', '17:00', 'Build breaks into playtime'],
+  ] as const)('selects the %s action from the timeline it returns', (period, start, title) => {
+    const { timeline, decision } = makeHouseholdPlan(allPeriods, { ...family, period }, now)
+    expect(timeline.map(row => row.period)).toEqual(['Morning', 'Afternoon', 'Evening'])
+    expect(timeline.filter(row => row.kind === 'outing')).toHaveLength(1)
+    expect(decision.outing).toBe(timeline.find(row => row.period === period))
+    expect(decision.outing).toMatchObject({
+      title, start: Date.parse('2026-11-24T' + start + ':00+05:30'),
+    })
+  })
+
+  it.each([
+    ['2026-11-24T23:59:59+05:30', null],
+    ['2026-11-25T00:00:00+05:30', contrast],
+  ] as const)('keeps the dated morning outing without usable evidence at %s', (instant, data) => {
+    const { timeline, decision } = makeHouseholdPlan(data, { ...family, period: 'Morning' }, Date.parse(instant))
+    expect(decision.outing).toBe(timeline[0])
+    expect(decision.outing).toMatchObject({
+      start: Date.parse('2026-11-25T06:00:00+05:30'), title: 'Recheck the forecast before playtime',
+      forecast: { complete: false, low: null, high: null },
+    })
+    expect(decision.alternative).toBeNull()
+  })
+
+  it('rejects an invalid outing period explicitly', () => {
+    // @ts-expect-error Exercise an unchecked JavaScript caller.
+    expect(() => makeHouseholdPlan(contrast, { ...family, period: 'Overnight' }, now))
+      .toThrow('No outing for the selected household period')
+  })
+})
 
 describe('feasible household choices', () => {
   it('keeps hazardous afternoon play indoors and offers only the independently covered lower evening for outdoor play', () => {

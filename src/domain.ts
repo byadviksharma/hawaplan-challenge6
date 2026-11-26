@@ -83,6 +83,7 @@ export const bulletinSchema = z.object({
   notice: z.enum(['cached', 'rate', 'source']).optional(),
 })
 export type Bulletin = z.infer<typeof bulletinSchema>
+export type AirStatus = 'loading' | 'refreshing' | 'ready' | 'offline' | 'rate' | 'source'
 export type Point = z.infer<typeof hourlySchema>
 const validAge = 3 * hour
 const retrievalAge = hour

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { makePlan } from '../src/plan'
 import { makeDecision } from '../src/choices'
 import { forecastSummary, outlookPoints, type Bulletin, type Period, type Profile } from '../src/domain'
 import { decisionContext, evidenceRevision, resolveExplanation } from '../src/explanationFacts'
@@ -23,7 +22,7 @@ function bulletin(hours: Bulletin['hours'], now = noonCheck, current: number | n
   return { city: 'delhi', valid: now, retrieved: now, pm25: null, pm10: null, aqi: current, hours }
 }
 function outing(data: Bulletin, now = noonCheck, period: Period = 'Afternoon') {
-  return makePlan(data, { ...children, period }, now).find((row) => row.kind === 'outing')!
+  return makeDecision(data, { ...children, period }, now).outing
 }
 
 describe('12:05 IST with improving hourly estimates', () => {
@@ -196,8 +195,8 @@ describe('client and Worker agreement with boundary evidence', () => {
     vi.useFakeTimers()
     vi.setSystemTime(noonCheck)
     const stale = { ...bulletin([earlier, ...later]), retrieved: ist('10:00') }
-    const rows = makePlan(stale, children, noonCheck)
-    const decision = makeDecision(null, children, noonCheck, rows)
+    const decision = makeDecision(null, children, noonCheck)
+    expect(makeDecision(stale, children, noonCheck)).toEqual(decision)
     const context = decisionContext(null, children, decision, noonCheck)
     const req = new Request('https://local.test/api/explain', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

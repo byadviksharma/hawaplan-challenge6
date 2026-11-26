@@ -26,20 +26,22 @@ export async function evidenceRevision(context: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
+export class InvalidReasoningError extends Error {}
+
 function fact(d: HouseholdDecision, role: ChoiceEvidence['role'], option: string, id: string) {
   const found = d.evidence.find((f) => f.option === option && f.role === role && f.id === id)
-  if (!found) throw Error('Unsupported evidence reference')
+  if (!found) throw new InvalidReasoningError('Unsupported evidence reference')
   return found
 }
 
 export function interpretReasoning(d: HouseholdDecision, r: Reasoning) {
-  if (!d.alternative) throw Error('No supported comparison')
+  if (!d.alternative) throw new InvalidReasoningError('No supported comparison')
   const reverse = r.prefer.option === d.alternative.id
-  if (reverse && !d.alternative.canLead) throw Error('Planner recommendation is required')
+  if (reverse && !d.alternative.canLead) throw new InvalidReasoningError('Planner recommendation is required')
   const recommended = reverse ? d.alternative : d.recommended
   const alternative = reverse ? d.recommended : d.alternative
   if (r.prefer.option !== recommended.id || r.switchIf.option !== alternative.id)
-    throw Error('Unsupported option pairing')
+    throw new InvalidReasoningError('Unsupported option pairing')
 
   const goals = r.prefer.goals.map((id) => fact(d, 'fit', recommended.id, id).text)
   const competing = fact(d, 'fit', alternative.id, r.switchIf.goal).text
@@ -49,7 +51,7 @@ export function interpretReasoning(d: HouseholdDecision, r: Reasoning) {
     (f.option === recommended.id && (f.id === r.switchIf.goal || f.text === competing))
   ))
   if (new Set(goals).size !== goals.length || sharedPriority)
-    throw Error('Comparison requires different priorities')
+    throw new InvalidReasoningError('Comparison requires different priorities')
   const concession = fact(d, 'tradeoff', recommended.id, r.cost).text
   const limitation = fact(d, 'limit', r.limit.option, r.limit.fact).text
   const priority = goals.join(' and ')

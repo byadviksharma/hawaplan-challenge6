@@ -4,6 +4,7 @@ import { currentDuring, forecastSummary, outlookPoints, stale, type Bulletin, ty
 import { decisionContext, evidenceRevision, resolveExplanation } from '../src/explanationFacts'
 import { explanationSchema } from '../src/contracts'
 import { route } from '../worker/index'
+import { playtimeRevisions } from './fixtures/playtimeRevisions'
 
 const hour = 3_600_000
 const ist = (time: string, day = '2026-11-24') => Date.parse(day + 'T' + time + '+05:30')
@@ -140,6 +141,25 @@ async function post(data: Bulletin, context: string, profile = family) {
 }
 
 describe('Worker explanations at the current-estimate boundary', () => {
+  it.each([
+    [first - 1_000, playtimeRevisions.current, 'Move playtime indoors'],
+    [first, playtimeRevisions.earlier, 'Recheck conditions before playtime'],
+  ] as const)('accepts the Phase A browser revision at %s', async (at, revision, title) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(at)
+    const data = bulletin()
+    const request = new Request('https://local.test/api/explain', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ city: 'delhi', profile: family, valid: data.valid, retrieved: data.retrieved, revision }),
+    })
+    const response = await route(request, {}, async () => ({ data }))
+    expect(response.status).toBe(200)
+    const answer = explanationSchema.parse(await response.json())
+    expect(await evidenceRevision(answer.context)).toBe(revision)
+    const [, , decision] = JSON.parse(answer.context)
+    expect(decision.outing).toMatchObject({ period: 'Afternoon', kind: 'outing', title })
+  })
+
   function finishAt(time: number) {
     return vi.fn(async () => {
       vi.setSystemTime(time)

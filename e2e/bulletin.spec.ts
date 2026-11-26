@@ -613,7 +613,11 @@ test('live provider, source times, city switch and Worker explanation', async ({
     expect(second).not.toEqual(first)
     await screenshot(page, info.project.name + '-live-ai')
   } else {
-    await expectWorkerRules(page, explanationResponse)
+    const answer = await expectWorkerRules(page, explanationResponse)
+    const [, , decision] = JSON.parse(answer.context)
+    expect(decision.outing).toMatchObject({ kind: 'outing', period: 'Evening' })
+    await expect(outing.getByRole('heading')).toHaveText(decision.outing.title)
+    await expect(outing.locator('time')).toHaveAttribute('datetime', new Date(decision.outing.start).toISOString())
     await page.locator('.explanation-body').scrollIntoViewIfNeeded()
     await screenshot(page, info.project.name + '-fallback')
   }

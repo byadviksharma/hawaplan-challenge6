@@ -9,6 +9,8 @@ export const requestSchema = z.strictObject({
   revision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 })
 
+export type ExplanationRequest = z.infer<typeof requestSchema>
+
 const reference = z.string().min(1).max(64).regex(/^[a-z][a-z-]*$/)
 export const reasoningSchema = z.strictObject({
   prefer: z.strictObject({

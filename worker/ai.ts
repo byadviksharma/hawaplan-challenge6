@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import type { AiModels, AiOptions, RateLimit } from '@cloudflare/workers-types'
 import { cities, modeledReading, stale, type Bulletin, type Profile } from '../src/domain'
-import { makeDecision } from '../src/choices'
-import { decisionContext, interpretReasoning } from '../src/explanationFacts'
+import { makeDecision, type HouseholdDecision } from '../src/choices'
+import { decisionContext, interpretReasoning, InvalidReasoningError } from '../src/explanationFacts'
 import { modelDetail, reasoningSchema, ruleDetails, type Explanation } from '../src/contracts'
 
 export type InferenceBindings = {
@@ -29,6 +29,19 @@ const completion = z.object({
   choices: z.array(z.object({ message: z.object({ content: z.string().max(2000) }) })).min(1),
 })
 
+function verifiedReasoning(result: unknown, decision: HouseholdDecision) {
+  try {
+    const text = completion.parse(result).choices[0].message.content
+    const reasoning = reasoningSchema.parse(JSON.parse(text))
+    interpretReasoning(decision, reasoning)
+    return reasoning
+  } catch (error) {
+    if (error instanceof z.ZodError || error instanceof SyntaxError || error instanceof InvalidReasoningError)
+      return null
+    throw error
+  }
+}
+
 export async function explain(
   env: InferenceBindings,
   b: Bulletin | null,
@@ -47,7 +60,9 @@ export async function explain(
   if (!decision.alternative) return rules(ruleDetails.single)
   if (!env.AI || !env.EXPLANATIONS) return rules(ruleDetails.binding)
   try {
-    if (!(await env.EXPLANATIONS.limit({ key })).success) return rules(ruleDetails.limit)
+    const quota = await env.EXPLANATIONS.limit({ key }).catch(() => null)
+    if (!quota) return rules(ruleDetails.unverified)
+    if (!quota.success) return rules(ruleDetails.limit)
     const result = await env.AI.run(
       model,
       {
@@ -74,12 +89,12 @@ export async function explain(
         response_format: { type: 'json_object' },
       },
       { signal: AbortSignal.timeout(12000) } satisfies AiOptions,
-    )
-    const text = completion.parse(result).choices[0].message.content
-    const reasoning = reasoningSchema.parse(JSON.parse(text))
-    interpretReasoning(decision, reasoning)
+    ).catch(() => null)
+    const reasoning = verifiedReasoning(result, decision)
+    if (!reasoning) return rules(ruleDetails.unverified)
     return { mode: 'model', context, created: Date.now(), detail: modelDetail, reasoning }
   } catch {
+    console.error({ event: 'internal_failure', operation: 'model_explanation' })
     return rules(ruleDetails.unverified)
   }
 }

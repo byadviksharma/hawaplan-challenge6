@@ -1,11 +1,11 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page, type Route } from '@playwright/test'
-import { createHash } from 'node:crypto'
 import { makeDecision } from '../src/choices'
 import { ruleDetails } from '../src/contracts'
 import { type Bulletin, type Profile } from '../src/domain'
 import { decisionContext } from '../src/explanationFacts'
 import { screenshot } from './screenshot'
+import { playtimeRevisions } from '../tests/fixtures/playtimeRevisions'
 
 const at = (time: string) => Date.parse('2026-11-24T' + time + '+05:30')
 const family: Profile = {
@@ -21,7 +21,7 @@ const bulletin: Bulletin = {
 }
 
 async function openBulletin(page: Page, now: number, data: Bulletin) {
-  const requests = { air: 0, browserRevisions: [] as string[], workerRevisions: [] as string[] }
+  const requests = { air: 0, browserRevisions: [] as string[] }
   await page.clock.install({ time: now - 60_000 })
   await page.clock.pauseAt(now)
   await page.addInitScript(profile => localStorage.setItem('hawa.v1.profile', JSON.stringify(profile)), family)
@@ -37,7 +37,6 @@ async function openBulletin(page: Page, now: number, data: Bulletin) {
     const context = decisionContext(data, profile, decision, workerTime)
     const detail = workerTime < at('12:30:00') ? ruleDetails.single : ruleDetails.current
     requests.browserRevisions.push(revision)
-    requests.workerRevisions.push(createHash('sha256').update(context).digest('hex'))
     await route.fulfill({ json: { mode: 'rules', reasoning: null, created: workerTime, detail, context } })
   })
   await page.goto('/')
@@ -143,8 +142,7 @@ test('one open bulletin retires the hazardous current reading and outdoor choice
   await expect(result).toContainText(/current.*(?:unavailable|missing|unknown)|no current/i)
   await expect(result).not.toContainText(unsupportedAdvice)
   await expect(result).not.toContainText(/alternative|conditions changed|could not be verified|service is unavailable/i)
-  expect(requests.browserRevisions).toEqual(requests.workerRevisions)
-  expect(new Set(requests.browserRevisions).size).toBe(2)
+  expect(requests.browserRevisions).toEqual([playtimeRevisions.current, playtimeRevisions.earlier])
   expect(requests.air).toBe(1)
   await result.evaluate(el => el.scrollIntoView({ block: 'start' }))
   await screenshot(page, 'repaired-' + width + '-explanation')
@@ -201,8 +199,7 @@ test('a pending explanation keeps keyboard focus and its late reply cannot repla
   await page.keyboard.press('Space')
   await expect(result).toHaveText(updatedText, { useInnerText: true })
   await expect(button).toBeFocused()
-  expect(requests.browserRevisions).toEqual(requests.workerRevisions)
-  expect(requests.browserRevisions).toHaveLength(1)
+  expect(requests.browserRevisions).toEqual([playtimeRevisions.earlier])
   expect(requests.browserRevisions[0]).not.toBe(earlier.request().postDataJSON().revision)
   expect(requests.air).toBe(1)
 })

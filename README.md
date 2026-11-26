@@ -32,12 +32,14 @@ npm run preview -- --port 4173 --strictPort
 
 | Component | Responsibility |
 | --- | --- |
-| React, TypeScript and Vite | Render conditions, the plan, the chart and explanations. Shared TypeScript rules compute outing choices from the same dated evidence in the browser and Worker. |
+| React, TypeScript and Vite | Render conditions, the plan, the chart and explanations. `makeHouseholdPlan` builds the timeline and selects its outing from one bulletin, household profile and instant. The Worker uses the same planner for its decision. |
 | `GET /api/air?city=delhi` | The Cloudflare Worker resolves a supported city to fixed coordinates, validates the provider’s timestamps, units, values and hourly arrays with Zod, and caches the bulletin for reuse. |
 | `POST /api/explain` | The Worker independently resolves the bulletin and checks the browser’s decision revision, including current-reading eligibility. The browser retires an explanation when its supporting facts change. |
 | Optional Workers AI | When a current modeled AQI and two supported choices are available, Google Gemma weighs their trade-offs. It can favor only an option the planner permits. The Worker and browser validate the model’s option and evidence references. The application supplies the displayed facts, numbers and wording. |
 
 **Explain my plan** identifies whether the answer is model-composed or rule-based. Missing current evidence, a single supported action, unavailable bindings, rate limits and unverified model outputs yield labeled rules. If the decision changes during a request, the old comparison is discarded. The model is `@cf/google/gemma-4-26b-a4b-it`. [Workers AI model details](https://developers.cloudflare.com/workers-ai/models/gemma-4-26b-a4b-it/)
+
+The Worker handles HTTP methods, origins and request bodies in `worker/index.ts`. `worker/air.ts` manages bulletin caching and provider backoff. `worker/explanation.ts` checks the displayed evidence before inference and rechecks it before returning the answer. Provider failures and unexpected internal errors have distinct diagnostic events.
 
 ## Accessibility and privacy
 
@@ -70,7 +72,7 @@ With `CI=1`, Playwright starts a fresh local preview of the default build. With 
 
 | Verified locally | Scope |
 | --- | --- |
-| 144 unit and Worker tests passed | Provider and cache validation, freshness, planning, explanation contracts and fallback behavior. |
+| 187 unit and Worker tests passed | Provider and cache validation, freshness, household planning, HTTP and explanation contracts, error diagnostics and fallback behavior. |
 | 60 Playwright tests passed | Production preview in Chrome at 1440 × 1000, 390 × 844 and 320 × 844, including three live Delhi/Bengaluru provider journeys. Model-composed responses used test doubles. |
 | 15 scoped axe scans found zero violations | Selected browser states, supplemented by keyboard, focus and viewport checks. |
 

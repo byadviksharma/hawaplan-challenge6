@@ -145,13 +145,23 @@ function candidates(outing: Action, p: Profile): [Candidate, Candidate | null] {
     ? { ...indoor, canLead: true } : null]
 }
 
-export function makeDecision(
+export function makeHouseholdPlan(b: Bulletin | null, p: Profile, now: number) {
+  const timeline = makePlan(b, p, now)
+  const outing = timeline.find(row => row.kind === 'outing')
+  if (!outing) throw new Error('No outing for the selected household period')
+  return { timeline, decision: decideOuting(b, p, now, outing) }
+}
+
+export function makeDecision(b: Bulletin | null, p: Profile, now: number): HouseholdDecision {
+  return makeHouseholdPlan(b, p, now).decision
+}
+
+function decideOuting(
   b: Bulletin | null,
   p: Profile,
   now: number,
-  plan = makePlan(b, p, now),
+  outing: Action,
 ): HouseholdDecision {
-  const outing = plan.find((row) => row.kind === 'outing')!
   const decision: HouseholdDecision = {
     outing, recommended: { id: 'recheck', title: outing.title },
     alternative: null, basis: actionLabel(outing) + ' · ' + outing.reason, evidence: [],

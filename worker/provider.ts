@@ -1,3 +1,4 @@
+import { boundedJSON, isInvalidBody } from './body'
 import { z } from 'zod'
 import {
   cities,
@@ -8,6 +9,8 @@ import {
   hour,
   usable,
 } from '../src/domain'
+
+export { boundedJSON }
 
 export class SourceError extends Error {
   constructor(public readonly kind: 'rate' | 'source') {
@@ -47,7 +50,9 @@ const rawSchema = z.object({
     .optional(),
 })
 export function parseProvider(raw: unknown, city: City, now: number): Bulletin {
-  const data = rawSchema.parse(raw)
+  const parsed = rawSchema.safeParse(raw)
+  if (!parsed.success) throw new SourceError('source')
+  const data = parsed.data
   if (
     Math.abs(data.latitude - cities[city].lat) > 0.5 ||
     Math.abs(data.longitude - cities[city].lon) > 0.5
@@ -81,33 +86,6 @@ export function parseProvider(raw: unknown, city: City, now: number): Bulletin {
   if (!usable(result, now)) throw new SourceError('source')
   return result
 }
-export async function boundedJSON(
-  response: Response,
-  limit: number,
-): Promise<unknown> {
-  if (Number(response.headers.get('content-length')) > limit)
-    throw new RangeError('Size limit')
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error('Empty body')
-  const decoder = new TextDecoder()
-  let size = 0,
-    content = ''
-  try {
-    for (;;) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      size += chunk.value.byteLength
-      if (size > limit) {
-        await reader.cancel()
-        throw new RangeError('Size limit')
-      }
-      content += decoder.decode(chunk.value, { stream: true })
-    }
-    return JSON.parse(content + decoder.decode())
-  } finally {
-    reader.releaseLock()
-  }
-}
 export function providerURL(city: City) {
   const c = cities[city]
   const url = new URL('https://air-quality-api.open-meteo.com/v1/air-quality')
@@ -124,11 +102,16 @@ export function providerURL(city: City) {
   return url
 }
 export async function fetchBulletin(city: City) {
+  const unavailable = () => { throw new SourceError('source') }
   const res = await fetch(providerURL(city), {
     signal: AbortSignal.timeout(8500),
     redirect: 'manual',
-  })
+  }).catch(unavailable)
   if (!res.ok) throw new SourceError(res.status === 429 ? 'rate' : 'source')
-  return parseProvider(await boundedJSON(res, 48000), city, Date.now())
+  const raw = await boundedJSON(res, 48000).catch(error => {
+    if (isInvalidBody(error)) throw new SourceError('source')
+    throw error
+  })
+  return parseProvider(raw, city, Date.now())
 }
 export const refreshAfter = hour / 4

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { bulletinSchema, nextBulletinTick, usable, type Bulletin, type City } from './domain'
+import { bulletinSchema, nextBulletinTick, usable, type AirStatus, type Bulletin, type City } from './domain'
+export type { AirStatus as Status } from './domain'
 
 export function readLocal(key: string): unknown {
   try {
@@ -15,12 +16,10 @@ export function saveLocal(key: string, data: unknown) {
     /* Private browsing or storage quota. */
   }
 }
-export type Status = 'loading' | 'refreshing' | 'ready' | 'offline' | 'rate' | 'source'
-
 export function useAir(city: City) {
   const [result, setResult] = useState<{
     city: City
-    status: Status
+    status: AirStatus
     data: Bulletin | null
   }>({ city, status: 'loading', data: null })
   const [now, setNow] = useState(Date.now)
@@ -47,7 +46,7 @@ export function useAir(city: City) {
       setNow(time)
       timer = setTimeout(tick, nextBulletinTick(data, time) - time)
     }
-    function publish(status: Status) {
+    function publish(status: AirStatus) {
       tick()
       setResult({ city, data, status })
     }

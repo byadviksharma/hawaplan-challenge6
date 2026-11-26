@@ -4,7 +4,7 @@ import { makeDecision } from '../src/choices'
 import { decisionContext, evidenceRevision, resolveExplanation } from '../src/explanationFacts'
 import { explanationSchema, ruleDetails, type Reasoning } from '../src/contracts'
 import { explain, model, type InferenceBindings } from '../worker/ai'
-import { getAir, route } from '../worker/index'
+import worker, { getAir, route } from '../worker/index'
 
 const now = Date.parse('2026-11-23T07:30:00+05:30')
 const day = Date.parse('2026-11-23T06:30:00+05:30')
@@ -44,6 +44,7 @@ async function snapshot(air: Bulletin, profile: Profile, at: number) {
 }
 const get = vi.fn(async () => ({ data: b }))
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.useRealTimers()
   get.mockClear()
@@ -188,6 +189,7 @@ describe('grounded household comparisons via the Worker', () => {
   })
 
   it('handles unavailable bindings, rate limits, quota errors and missing completions', async () => {
+    const failure = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect((await explain({}, b, errands, 'x', now)).detail).toBe(ruleDetails.binding)
     const denied = binding(briefErrands, false)
     expect((await explain(denied, b, errands, 'x', now)).detail).toBe(ruleDetails.limit)
@@ -200,6 +202,19 @@ describe('grounded household comparisons via the Worker', () => {
       expect(view(result, b, errands).recommended.title).toMatch(/errand list short/i)
     }
     expect(env.AI.run).toHaveBeenCalledTimes(2)
+    expect(failure).not.toHaveBeenCalled()
+  })
+
+  it('retains a rules fallback and reports an internal fault during model response validation', async () => {
+    const env = binding(briefErrands)
+    env.AI.run.mockResolvedValueOnce({
+      get choices() { throw Error('private runtime detail') },
+    })
+    const failure = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await explain(env, b, errands, 'x', now)
+    expect(result).toMatchObject({ mode: 'rules', reasoning: null, detail: ruleDetails.unverified })
+    expect(JSON.stringify(result)).not.toContain('private runtime detail')
+    expect(failure.mock.calls).toEqual([[{ event: 'internal_failure', operation: 'model_explanation' }]])
   })
 
   it('aborts a stalled model call at its deadline', async () => {
@@ -232,23 +247,95 @@ describe('grounded household comparisons via the Worker', () => {
 })
 describe('Worker HTTP boundary', () => {
   it.each([
-    [post({ ...input, city: 'unknown' }), 400],
-    [post({ ...input, aqi: 4 }), 400],
-    [post({ ...input, revision: 'unknown' }), 400],
-    [post({ ...input, profile: { ...defaults, notes: 'free text' } }), 400],
-    [post(input, { Origin: 'https://other.example' }), 403],
-    [post(input, { 'Content-Type': 'text/plain' }), 415],
-    [post('x'.repeat(2050)), 413],
-    [new Request('https://local.test/api/air?city=other'), 400],
-    [new Request('https://local.test/api/explain'), 405],
-    [new Request('https://local.test/api/unknown'), 404],
+    [post({}), 400, 'input'],
+    [post({ ...input, profile: { ...defaults, period: 'Overnight' } }), 400, 'input'],
+    [post({ ...input, city: 'unknown' }), 400, 'input'],
+    [post({ ...input, aqi: 4 }), 400, 'input'],
+    [post({ ...input, revision: 'unknown' }), 400, 'input'],
+    [post({ ...input, profile: { ...defaults, notes: 'free text' } }), 400, 'input'],
+    [post(input, { Origin: 'https://other.example' }), 403, 'origin'],
+    [post(input, { 'Content-Type': 'text/plain' }), 415, 'format'],
+    [post(input, { 'Content-Length': '2049' }), 413, 'input'],
+    [post('x'.repeat(2050)), 413, 'input'],
+    [new Request('https://local.test/api/explain', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{',
+    }), 400, 'input'],
+    [new Request('https://local.test/api/air?city=other'), 400, 'city'],
+    [new Request('https://local.test/api/air', { method: 'POST' }), 405, 'method'],
+    [new Request('https://local.test/api/explain'), 405, 'method'],
+    [new Request('https://local.test/api/unknown'), 404, 'not-found'],
   ] as const)(
-    'rejects invalid requests before accessing data',
-    async (req, code) => {
-      expect((await route(req, {}, get)).status).toBe(code)
+    'rejects invalid requests before accessing data or consuming quota',
+    async (req, status, error) => {
+      const env = binding(briefErrands)
+      const response = await route(req, env, get)
+      expect(response.status).toBe(status)
+      expect(await response.json()).toEqual({ error })
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff')
       expect(get).not.toHaveBeenCalled()
+      expect(env.EXPLANATIONS.limit).not.toHaveBeenCalled()
+      expect(env.AI.run).not.toHaveBeenCalled()
     },
   )
+  it('serves a successful air bulletin with the public JSON headers', async () => {
+    const response = await route(new Request('https://local.test/api/air?city=delhi'), {}, get)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toMatch(/^application\/json/)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(await response.json()).toEqual(b)
+    expect(get).toHaveBeenCalledWith('delhi')
+  })
+  it('accepts 2048 JSON bytes and rejects 2049 without consulting the source', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const payload = JSON.stringify({ ...input, valid: null })
+    const request = (length: number) => new Request('https://local.test/api/explain', {
+      method: 'POST', headers: { Origin: 'https://local.test', 'Content-Type': 'application/json; charset=utf-8' },
+      body: payload.padEnd(length, ' '),
+    })
+    expect((await route(request(2048), {}, get)).status).toBe(200)
+    expect((await route(request(2049), {}, get)).status).toBe(413)
+    expect(get).not.toHaveBeenCalled()
+  })
+  it.each([
+    ['read', new RangeError(), 413],
+    ['read', new Error(), 400],
+    ['cancel', new RangeError(), 413],
+    ['cancel', new Error(), 400],
+  ] as const)('preserves the HTTP status for a rejected stream %s', async (operation, error, status) => {
+    const options = {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, duplex: 'half',
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (operation === 'read') controller.error(error)
+          else controller.enqueue(new Uint8Array(2049))
+        },
+        cancel() { throw error },
+      }),
+    }
+    const request = new Request('https://local.test/api/explain', options)
+    const response = await route(request, {}, get)
+    expect(response.status).toBe(status)
+    expect(await response.json()).toEqual({ error: 'input' })
+    expect(get).not.toHaveBeenCalled()
+  })
+  it('keeps quota denial and a failing limiter labeled, before model inference', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const env = binding(briefErrands, false)
+    const payload = await snapshot(b, errands, now)
+    const request = () => post(payload, { 'CF-Connecting-IP': '192.0.2.1' })
+    env.EXPLANATIONS.limit.mockResolvedValueOnce({ success: false }).mockRejectedValueOnce(Error('binding unavailable'))
+    for (const detail of ['Explanation limit reached. Try again in a minute.', 'The AI service could not return a verified comparison.']) {
+      const response = await route(request(), env, get)
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ mode: 'rules', reasoning: null, detail })
+    }
+    expect(env.EXPLANATIONS.limit).toHaveBeenCalledWith({ key: '192.0.2.1' })
+    expect(env.AI.run).not.toHaveBeenCalled()
+  })
   it('rejects changed source time and explains a no-data request locally', async () => {
     expect(
       (await route(post({ ...input, valid: now + 1 }), {}, get)).status,
@@ -340,6 +427,28 @@ describe('Worker HTTP boundary', () => {
     expect((await route(post(request), env, load)).status).toBe(409)
     expect(env.AI.run).toHaveBeenCalledOnce()
   })
+  it('rejects an expired browser retrieval before and after inference despite a fresh Worker copy', async () => {
+    vi.useFakeTimers()
+    const env = binding(briefErrands)
+    const request = { ...await snapshot(b, errands, now), retrieved: now - hour }
+    vi.setSystemTime(now + 1)
+    const expired = await route(post(request), env, get)
+    expect(expired.status).toBe(409)
+    expect(await expired.json()).toEqual({ error: 'changed' })
+    expect(env.EXPLANATIONS.limit).not.toHaveBeenCalled()
+    expect(env.AI.run).not.toHaveBeenCalled()
+
+    vi.setSystemTime(now)
+    env.AI.run.mockImplementationOnce(async () => {
+      vi.setSystemTime(now + 1)
+      return { choices: [{ message: { content: JSON.stringify(briefErrands) } }] }
+    })
+    const late = await route(post(request), env, get)
+    expect(late.status).toBe(409)
+    expect(await late.json()).toEqual({ error: 'changed' })
+    expect(env.EXPLANATIONS.limit).toHaveBeenCalledOnce()
+    expect(env.AI.run).toHaveBeenCalledOnce()
+  })
   it('exposes source outages and upstream rate limits', async () => {
     const req = new Request('https://local.test/api/air?city=delhi')
     expect(
@@ -362,6 +471,73 @@ describe('Worker cache', () => {
       },
     }
   }
+  it('uses the provider deadline and accepts exactly the allowed response bytes', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const deadline = vi.spyOn(AbortSignal, 'timeout')
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const payload = JSON.stringify({
+      latitude: 28.7, longitude: 77.2, current: { time: now / 1000, us_aqi: 55 },
+      current_units: { time: 'unixtime', us_aqi: 'USAQI' },
+    })
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(payload.padEnd(48000)))
+      .mockResolvedValueOnce(new Response(payload.padEnd(48001)))
+    vi.stubGlobal('fetch', fetcher)
+    const load = () => getAir('delhi', memoryCache(), 'https://local.test')
+    expect((await load()).data?.aqi).toBe(55)
+    expect(await load()).toEqual({ data: null, error: 'source' })
+    expect(deadline).toHaveBeenCalledWith(8500)
+    expect(fetcher.mock.calls[0][1]).toMatchObject({ redirect: 'manual', signal: deadline.mock.results[0].value })
+  })
+  it.each([
+    ['provider rate limit', async () => new Response(null, { status: 429 }), 429, 'rate'],
+    ['provider outage', async () => new Response(null, { status: 503 }), 503, 'source'],
+    ['transport failure', async () => { throw new TypeError('private network detail') }, 503, 'source'],
+    ['invalid upstream JSON', async () => new Response('{'), 503, 'source'],
+    ['invalid upstream schema', async () => Response.json({}), 503, 'source'],
+  ] as const)('classifies %s without disclosing upstream details', async (_case, fetcher, status, kind) => {
+    vi.stubGlobal('fetch', fetcher)
+    vi.stubGlobal('caches', { default: memoryCache() })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const failure = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const response = await worker.fetch(new Request('https://local.test/api/air?city=delhi'), {})
+    expect(response.status).toBe(status)
+    expect(await response.json()).toEqual({ error: kind })
+    expect(warning.mock.calls).toEqual([[{ event: 'provider_failure', kind }]])
+    expect(failure).not.toHaveBeenCalled()
+  })
+  it('reports a local refresh fault separately and retains the usual cached fallback', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const cache = memoryCache()
+    const saved = { ...b, retrieved: now - hour }
+    await cache.put('https://local.test/internal-cache/v1/delhi', Response.json(saved))
+    vi.stubGlobal('caches', { default: cache })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      vi.spyOn(TextDecoder.prototype, 'decode').mockImplementationOnce(() => { throw Error('private runtime detail') })
+      return new Response('{}')
+    }))
+    const failure = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const response = await worker.fetch(new Request('https://local.test/api/air?city=delhi'), {})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ...saved, notice: 'source' })
+    expect(failure.mock.calls).toEqual([[{ event: 'internal_failure', operation: 'refresh_bulletin' }]])
+    expect(warning).not.toHaveBeenCalled()
+  })
+  it('keeps an unexpected request fault private and preserves the public 503 contract', async () => {
+    vi.stubGlobal('caches', { get default() { throw Error('private runtime detail') } })
+    const failure = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const response = await worker.fetch(new Request('https://local.test/api/air?city=delhi'), {})
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'source' })
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(failure.mock.calls).toEqual([[{ event: 'internal_failure', operation: 'handle_request' }]])
+    expect(warning).not.toHaveBeenCalled()
+  })
   it('reuses fresh data, preserves original timestamps on failure and backs off', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(now)
