@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "hawaplan",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-11-23",
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "env": {
+    "inference": {
+      "ai": { "binding": "AI", "remote": true },
+      "ratelimits": [
+        {
+          "name": "EXPLANATIONS",
+          // Public example. Select an unused integer for the deployment account.
+          "namespace_id": "1001",
+          "simple": { "limit": 5, "period": 60 },
+        },
+      ],
+    },
+  },
+}

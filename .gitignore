@@ -1,0 +1,25 @@
+# dependencies / builds
+node_modules/
+dist/
+build/
+coverage/
+playwright-report/
+test-results/
+.vite/
+.wrangler/
+# local secrets
+.env*
+.dev.vars*
+.npmrc
+*.p12
+*.pfx
+*.crt
+*.pem
+*.key
+# mac/editor
+.DS_Store
+.vscode/
+.idea/
+# logs
+*.log
+npm-debug.log*
