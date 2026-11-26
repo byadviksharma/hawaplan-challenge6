@@ -13,8 +13,8 @@
       "ratelimits": [
         {
           "name": "EXPLANATIONS",
-          // Public example. Select an unused integer for the deployment account.
-          "namespace_id": "1001",
+          // Dedicated to HawaPlan explanations in the target account.
+          "namespace_id": "613771823",
           "simple": { "limit": 5, "period": 60 },
         },
       ],
