@@ -45,7 +45,8 @@ button {
   background: transparent;
   border: 1px solid transparent;
 }
-button:disabled {
+button:disabled,
+.explain-btn[aria-disabled="true"] {
   cursor: wait;
   opacity: 0.75;
 }

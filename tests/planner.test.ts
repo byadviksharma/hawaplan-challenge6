@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  bulletinSchema,
   category,
   cities,
   forecastSummary,
@@ -53,6 +54,7 @@ describe('source contract', () => {
     { ...raw, current_units: { time: 'unixtime', pm10: 'μg/m³' } },
     { ...raw, hourly: { time: [], us_aqi: [20] } },
     { ...raw, hourly: { time: [now / 1000, now / 1000], us_aqi: [1, 2] } },
+    { ...raw, hourly: { time: [(now + hour) / 1000, now / 1000], us_aqi: [1, 2] } },
     { ...raw, current: { ...raw.current, pm10: -1 } },
     { ...raw, current: { ...raw.current, time: (now - 25 * hour) / 1000 } },
     { ...raw, current: { ...raw.current, time: (now + hour) / 1000 } },
@@ -80,6 +82,23 @@ describe('source contract', () => {
     await expect(
       boundedJSON(new Response('{"field":"large"}'), 6),
     ).rejects.toThrow(RangeError)
+  })
+})
+describe('bulletin forecast ordering', () => {
+  const hours = [
+    { time: now, aqi: 151 },
+    { time: now + hour, aqi: null },
+    { time: now + 3 * hour, aqi: 55 },
+  ]
+  it('preserves ordered samples, including a gap and a null AQI', () => {
+    expect(bulletinSchema.parse({ ...b, hours }).hours).toEqual(hours)
+  })
+  it.each([
+    ['duplicate', now + hour],
+    ['descending', now + hour / 2],
+  ] as const)('rejects a %s timestamp', (_, time) => {
+    const malformed = [...hours.slice(0, 2), { time, aqi: 55 }]
+    expect(bulletinSchema.safeParse({ ...b, hours: malformed }).success).toBe(false)
   })
 })
 describe('local time and index', () => {

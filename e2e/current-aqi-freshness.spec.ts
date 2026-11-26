@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page, type Route } from '@playwright/test'
 import { createHash } from 'node:crypto'
 import { makeDecision } from '../src/choices'
 import { ruleDetails } from '../src/contracts'
@@ -75,6 +75,11 @@ test('one open bulletin retires the hazardous current reading and outdoor choice
   await page.clock.runFor(999)
   await expect(label).toHaveText(/current/i)
   await expect(result).toBeVisible()
+  const hide = page.getByRole('button', { name: 'Hide explanation' })
+  await hide.focus()
+  const focusedControl = await hide.evaluateHandle(button => button)
+  const boundaryRequests: string[] = []
+  page.on('request', request => boundaryRequests.push(request.url()))
   await page.clock.runFor(1)
   await expect(label).toHaveText(/earlier.*modeled.*reading/i)
   await expect(banner).toContainText(/current.*(?:unavailable|missing|unknown)|no current/i)
@@ -88,12 +93,16 @@ test('one open bulletin retires the hazardous current reading and outdoor choice
   const unsupportedAdvice = /build breaks into playtime|keeping playtime outdoors|current (?:modeled )?US AQI is 352|currently hazardous/i
   await expect(row).not.toContainText(unsupportedAdvice)
   await expect(result).toHaveCount(0)
+  await expect(explainButton).toBeFocused()
+  expect(await focusedControl.evaluate(button => button === document.activeElement)).toBe(true)
+  await expect(explainButton).toHaveAttribute('aria-expanded', 'false')
   await page.clock.runFor(1_000)
   expect(await page.evaluate(() => Date.now())).toBe(at('12:30:01'))
   await expect(label).toHaveText(/earlier.*modeled.*reading/i)
   await expect(title).toContainText(/recheck|check/i)
   expect(requests.air).toBe(1)
   expect(requests.browserRevisions).toHaveLength(1)
+  expect(boundaryRequests).toEqual([])
   await page.evaluate(() => window.scrollTo(0, 0))
   await expect(label).toBeInViewport()
   await expect(banner.getByText(/current.*(?:unavailable|missing|unknown)|no current/i).last()).toBeInViewport()
@@ -147,6 +156,55 @@ test('one open bulletin retires the hazardous current reading and outdoor choice
   // Axe uses browser timers. Let time advance during the accessibility scan.
   await page.clock.resume()
   expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([])
+})
+
+test('a pending explanation keeps keyboard focus and its late reply cannot replace the updated decision', async ({ page }) => {
+  const start = at('12:29:59')
+  const requests = await openBulletin(page, start, bulletin)
+  // Hold a valid reply for the pre-expiry facts until a newer explanation is visible.
+  let hold!: (route: Route) => void
+  const held = new Promise<Route>(resolve => { hold = resolve })
+  await page.route('**/api/explain', hold, { times: 1 })
+  const button = page.locator('#explanation')
+  const result = page.locator('.explanation-body')
+  await button.focus()
+  await page.keyboard.press('Space')
+  const earlier = await held
+  await expect(button).toHaveAccessibleName('Preparing explanation…')
+  await expect(button).toBeFocused()
+  await expect(button).toBeDisabled()
+  const liveRegion = page.locator('#plan-explanation')
+  await expect(liveRegion).toHaveAttribute('aria-busy', 'true')
+  await page.keyboard.press('Enter')
+
+  await page.clock.runFor(1_000)
+  await expect(button).toHaveAccessibleName('Explain my plan')
+  await expect(button).toBeFocused()
+  await expect(button).toBeEnabled()
+  await expect(liveRegion).toHaveAttribute('aria-busy', 'false')
+  await expect(result).toHaveCount(0)
+  await expect(page.locator('.timeline li').first().getByRole('heading')).toContainText(/recheck/i)
+  expect(requests.browserRevisions).toHaveLength(0)
+
+  await page.keyboard.press('Enter')
+  await expect(result).toContainText(ruleDetails.current)
+  const updatedText = await result.innerText()
+  const earlierContext = decisionContext(bulletin, family, makeDecision(bulletin, family, start), start)
+  await earlier.fulfill({ json: {
+    mode: 'rules', detail: ruleDetails.single, reasoning: null, created: start, context: earlierContext,
+  } })
+  // A canceled fetch has no response. Otherwise wait for the old body to finish.
+  const response = await earlier.request().response()
+  await response?.finished()
+  await page.keyboard.press('Enter')
+  await expect(result).toBeHidden()
+  await page.keyboard.press('Space')
+  await expect(result).toHaveText(updatedText, { useInnerText: true })
+  await expect(button).toBeFocused()
+  expect(requests.browserRevisions).toEqual(requests.workerRevisions)
+  expect(requests.browserRevisions).toHaveLength(1)
+  expect(requests.browserRevisions[0]).not.toBe(earlier.request().postDataJSON().revision)
+  expect(requests.air).toBe(1)
 })
 
 test('source validity expires after three hours even with a recent provider retrieval', async ({ page }) => {

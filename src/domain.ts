@@ -76,7 +76,10 @@ export const bulletinSchema = z.object({
   aqi: reading,
   pm25: reading,
   pm10: reading,
-  hours: z.array(hourlySchema).max(120),
+  hours: z.array(hourlySchema).max(120).refine(
+    hours => hours.every((point, i) => i === 0 || point.time > hours[i - 1].time),
+    'Hourly timestamps must be strictly increasing.',
+  ),
   notice: z.enum(['cached', 'rate', 'source']).optional(),
 })
 export type Bulletin = z.infer<typeof bulletinSchema>

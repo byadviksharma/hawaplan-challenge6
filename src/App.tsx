@@ -324,7 +324,6 @@ function Edition({
             </p>
           )}
           <ExplanationBox
-            key={city + context}
             city={city}
             data={evidence}
             now={now}

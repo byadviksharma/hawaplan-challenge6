@@ -29,6 +29,13 @@ export function useAir(city: City) {
   useEffect(() => {
     const key = 'air.' + city
     const saved = bulletinSchema.safeParse(readLocal(key))
+    if (!saved.success) {
+      try {
+        localStorage.removeItem('hawa.v1.' + key)
+      } catch {
+        /* Storage may be read-only. */
+      }
+    }
     let data = saved.success && saved.data.city === city && usable(saved.data, Date.now())
       ? saved.data
       : null

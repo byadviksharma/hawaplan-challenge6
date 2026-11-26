@@ -44,6 +44,43 @@ const explain = (page: Page) => page.getByRole('button', { name: 'Explain my pla
 const model = (page: Page) => page.getByRole('heading', { name: 'AI-composed explanation' })
 const current = (page: Page) => page.getByText('Modeled estimate', { exact: true })
 
+test('discards an unordered saved bulletin and caches a valid forecast on retry', async ({ page }) => {
+  await setClock(page, morning)
+  const fresh = {
+    ...bulletin(),
+    hours: [
+      { time: morning, aqi: 55 },
+      { time: morning + hour, aqi: null },
+      { time: morning + 3 * hour, aqi: 80 },
+    ],
+  }
+  const key = 'hawa.v1.air.delhi'
+  const corrupt = { ...fresh, aqi: 355, hours: [...fresh.hours].reverse() }
+  await page.addInitScript(({ key, corrupt }) => {
+    localStorage.setItem(key, JSON.stringify(corrupt))
+  }, { key, corrupt })
+  let available = false
+  await page.route('**/api/air?*', route => available
+    ? route.fulfill({ json: fresh })
+    : route.fulfill({ status: 503, json: { error: 'source' } }))
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'No current reading' })).toBeVisible()
+  await expect(page.getByTestId('aqi')).toHaveText('—')
+  await expect(page.locator('#forecast .plot')).toHaveCount(0)
+  expect(await page.evaluate(key => localStorage.getItem(key), key)).toBeNull()
+
+  available = true
+  await page.getByRole('button', { name: 'Retry' }).click()
+  await expect(current(page)).toBeVisible()
+  await expect(page.getByTestId('aqi')).toHaveText('55')
+  await page.getByText('View hourly values', { exact: true }).click()
+  const rows = page.getByRole('table').locator('tbody tr')
+  await expect(rows).toHaveCount(3)
+  await expect(rows.nth(1)).toContainText(/09:30.*Unavailable/)
+  await expect(rows.last()).toContainText(/11:30.*80/)
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), key)).toEqual(fresh)
+})
+
 test('identical and retrieval-only refreshes retain the plot and open model explanation without repeat requests', async ({ page }, info) => {
   await setClock(page, morning)
   // Current evidence survives even when private browsing disallows persistence.

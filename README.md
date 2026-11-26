@@ -66,12 +66,12 @@ npx playwright install chromium
 CI=1 npm run test:e2e
 ```
 
-With `CI=1`, Playwright starts a fresh local preview of the default build. With `HAWAPLAN_LIVE` unset, it runs 48 controlled browser cases. To include the three public Open-Meteo journeys, run `CI=1 HAWAPLAN_LIVE=1 HAWAPLAN_EXPECT_AI=0 npm run test:e2e`. The default build has no AI binding. `HAWAPLAN_EXPECT_AI` controls the test assertion. To use an installed Google Chrome, set `PLAYWRIGHT_CHANNEL=chrome` in the test environment.
+With `CI=1`, Playwright starts a fresh local preview of the default build. With `HAWAPLAN_LIVE` unset, it runs 57 controlled browser cases. To include the three public Open-Meteo journeys, run `CI=1 HAWAPLAN_LIVE=1 HAWAPLAN_EXPECT_AI=0 npm run test:e2e`. The default build has no AI binding. `HAWAPLAN_EXPECT_AI` controls the test assertion. To use an installed Google Chrome, set `PLAYWRIGHT_CHANNEL=chrome` in the test environment.
 
 | Verified locally | Scope |
 | --- | --- |
-| 139 unit and Worker tests passed | Provider validation, freshness, planning, explanation contracts and fallback behavior. |
-| 51 Playwright tests passed | Production preview in Chrome at 1440 × 1000, 390 × 844 and 320 × 844, including three live Delhi/Bengaluru provider journeys. Model-composed responses used test doubles. |
+| 144 unit and Worker tests passed | Provider and cache validation, freshness, planning, explanation contracts and fallback behavior. |
+| 60 Playwright tests passed | Production preview in Chrome at 1440 × 1000, 390 × 844 and 320 × 844, including three live Delhi/Bengaluru provider journeys. Model-composed responses used test doubles. |
 | 15 scoped axe scans found zero violations | Selected browser states, supplemented by keyboard, focus and viewport checks. |
 
 ## Production verification

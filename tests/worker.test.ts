@@ -382,11 +382,13 @@ describe('Worker cache', () => {
     vi.setSystemTime(now + 25 * hour)
     expect((await getAir('delhi', cache, origin)).data).toBeNull()
   })
-  it('serves the bulletin and the following explanation from one provider retrieval', async () => {
+  it('replaces an unordered cached bulletin and serves the following explanation from one retrieval', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(now)
     const origin = 'https://local.test'
     const cache = memoryCache()
+    const unordered = { ...b, hours: [b.hours[1], b.hours[0]] }
+    await cache.put(origin + '/internal-cache/v1/delhi', Response.json(unordered))
     const provider = vi.fn(async () => Response.json({
       latitude: 28.7, longitude: 77.2,
       current: { time: now / 1000, us_aqi: b.aqi, pm2_5: b.pm25, pm10: b.pm10 },
@@ -402,6 +404,15 @@ describe('Worker cache', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({ mode: 'model' })
     expect(provider).toHaveBeenCalledOnce()
+  })
+  it('withholds a cached bulletin with duplicate timestamps when the provider fails', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const cache = memoryCache(), origin = 'https://local.test'
+    const saved = { ...b, retrieved: now - hour, hours: [b.hours[0], b.hours[0]] }
+    await cache.put(origin + '/internal-cache/v1/delhi', Response.json(saved))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 503 })))
+    expect(await getAir('delhi', cache, origin)).toEqual({ data: null, error: 'source' })
   })
   it('withholds a saved estimate if it expires during a failed provider check', async () => {
     vi.useFakeTimers()

@@ -1,9 +1,9 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page, type Response } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 import { screenshot } from './screenshot'
-import { type Bulletin, type City, type Profile } from '../src/domain'
+import { stamp, type Bulletin, type City, type Profile } from '../src/domain'
 import { makeDecision } from '../src/choices'
-import { modelDetail, type Explanation } from '../src/contracts'
+import { explanationSchema, modelDetail, ruleDetails, type Explanation } from '../src/contracts'
 import { decisionContext } from '../src/explanationFacts'
 const hour = 3600000
 const morning = Date.parse('2026-11-24T08:30:00+05:30')
@@ -33,6 +33,17 @@ async function mockData(page: Page) {
       ),
     }),
   )
+}
+async function expectWorkerRules(page: Page, response: Response) {
+  expect(response.status()).toBe(200)
+  const answer = explanationSchema.parse(await response.json())
+  expect(answer.mode).toBe('rules')
+  const box = page.locator('.explanation-body')
+  await expect(box.getByRole('heading', { name: 'Rule-based explanation', exact: true })).toBeVisible()
+  const detail = box.locator('.fine')
+  await expect(detail).toBeVisible()
+  await expect(detail).toHaveText(answer.detail + ' · Prepared ' + stamp(answer.created))
+  return answer
 }
 test('household changes actions and persists; city, table, guide and accessible controls work', async ({
   page,
@@ -135,16 +146,13 @@ test('honest loading, retry, missing values, stale and offline', async ({
   await expect(page.locator('#forecast .chart-note')).toContainText(
     /fresh hourly forecast/i,
   )
-  // Keep /api/explain on the actual local Worker. A stale display cannot be
-  // used to request a forecast comparison, even with an hourly array present.
+  // The local Worker must receive no usable evidence when the display is stale.
   const reply = page.waitForResponse('**/api/explain')
   await page.getByRole('button', { name: 'Explain my plan' }).click()
   const response = await reply
-  expect(response.status()).toBe(200)
   expect(response.request().postDataJSON()).toMatchObject({ valid: null, retrieved: null })
-  expect(await response.json()).toMatchObject({ mode: 'rules', reasoning: null })
+  expect((await expectWorkerRules(page, response)).detail).toBe(ruleDetails.current)
   const staleExplanation = page.locator('.explanation-body')
-  await expect(staleExplanation.getByRole('heading', { name: 'Rule-based explanation' })).toBeVisible()
   await expect(staleExplanation).toContainText(/recheck|fresh forecast/i)
   await expect(staleExplanation.getByText('Alternative', { exact: true })).toHaveCount(0)
   await context.setOffline(true)
@@ -155,6 +163,26 @@ test('honest loading, retry, missing values, stale and offline', async ({
   await expect(
     page.getByText('Modeled estimate', { exact: true }),
   ).toBeVisible()
+})
+test('a fresh forecast with an earlier AQI shows the Worker’s current-AQI fallback', async ({ page }) => {
+  const data = { ...fixture('delhi', morning), valid: morning - hour }
+  await page.clock.setFixedTime(morning)
+  await page.route('**/api/air?*', route => route.fulfill({ json: data }))
+  // Replay the current-AQI contract while the hourly outlook is still usable.
+  await page.route('**/api/explain', route => {
+    const { profile } = route.request().postDataJSON()
+    const context = decisionContext(data, profile, makeDecision(data, profile, morning), morning)
+    return route.fulfill({ json: {
+      mode: 'rules', reasoning: null, detail: ruleDetails.current, created: morning, context,
+    } })
+  })
+  await page.goto('/')
+  await expect(page.getByRole('region', { name: 'Earlier modeled reading' })).toBeVisible()
+  await expect(page.locator('#forecast .plot')).toBeVisible()
+  const reply = page.waitForResponse('**/api/explain')
+  await page.getByRole('button', { name: 'Explain my plan' }).click()
+  const answer = await expectWorkerRules(page, await reply)
+  expect(answer.detail).toBe(ruleDetails.current)
 })
 test('invalid cached presets recover and late city data cannot replace the next city', async ({
   page,
@@ -560,7 +588,9 @@ test('live provider, source times, city switch and Worker explanation', async ({
   const rows = page.getByRole('table').locator('tbody tr')
   await expect(rows.first()).toBeVisible()
   expect([24, 25]).toContain(await rows.count())
+  const explanationReply = page.waitForResponse('**/api/explain')
   await page.getByRole('button', { name: 'Explain my plan' }).click()
+  const explanationResponse = await explanationReply
   if (process.env.HAWAPLAN_EXPECT_AI === '1') {
     const heading = page.getByRole('heading', {
       name: 'AI-composed explanation',
@@ -583,12 +613,7 @@ test('live provider, source times, city switch and Worker explanation', async ({
     expect(second).not.toEqual(first)
     await screenshot(page, info.project.name + '-live-ai')
   } else {
-    await expect(
-      page.getByRole('heading', { name: 'Rule-based explanation' }),
-    ).toBeVisible()
-    await expect(page.locator('.explanation-body')).toContainText(
-      /Workers AI is not connected|single.*action|one.*option|only one|one supported action|fresh.*forecast/i,
-    )
+    await expectWorkerRules(page, explanationResponse)
     await page.locator('.explanation-body').scrollIntoViewIfNeeded()
     await screenshot(page, info.project.name + '-fallback')
   }

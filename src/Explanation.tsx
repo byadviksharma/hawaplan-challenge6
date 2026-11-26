@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { BookOpen, ArrowUpRight } from 'lucide-react'
 import { modeledReading, type Bulletin, type City, type Profile, stamp } from './domain'
 import { explanationSchema, ruleDetails } from './contracts'
@@ -10,6 +10,12 @@ type Result = {
   created: number
   detail: string
   view: ReturnType<typeof ruleReasoning>
+}
+type ExplanationState = {
+  context: string
+  result: Result | null
+  open: boolean
+  busy: boolean
 }
 const changed = 'Conditions changed. Refresh the bulletin for a new explanation.'
 const unavailable = 'The explanation service is unavailable.'
@@ -33,25 +39,30 @@ export function ExplanationBox({
   onRequest: () => void
   onConflict: () => void
 }) {
-  const [result, setResult] = useState<Result | null>(null)
-  const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [state, setState] = useState<ExplanationState | null>(null)
+  const { result, open, busy } = state ?? { result: null, open: false, busy: false }
   const controller = useRef<AbortController | null>(null)
   const reusable = result && (
     result.mode === 'model' || result.detail === ruleDetails.current ||
     result.detail === ruleDetails.single || result.detail === ruleDetails.binding
   )
-  useEffect(() => () => controller.current?.abort(), [])
+  useLayoutEffect(() => () => {
+    controller.current?.abort()
+    controller.current = null
+  }, [context])
+  // Clear the previous decision's state before React commits the new bulletin.
+  if (state && state.context !== context) setState(null)
   async function request() {
     if (controller.current) return
     if (reusable) {
-      setOpen(!open)
+      setState({ context, result, open: !open, busy: false })
       return
     }
     const abort = new AbortController()
     controller.current = abort
     onRequest()
-    setBusy(true)
+    setState({ context, result, open, busy: true })
+    const show = (result: Result) => setState({ context, result, open: true, busy: false })
     let failure = unavailable
     try {
       const revision = await evidenceRevision(context)
@@ -68,8 +79,7 @@ export function ExplanationBox({
       })
       if (abort.signal.aborted) return
       if (res.status === 409) {
-        setResult(null)
-        setOpen(false)
+        setState(null)
         onConflict()
         return
       }
@@ -83,23 +93,18 @@ export function ExplanationBox({
       }
       const { mode, detail, created } = answer
       const view = resolveExplanation(answer, decision, context)
-      setResult({ mode, detail, created, view })
-      setOpen(true)
+      show({ mode, detail, created, view })
     } catch {
       if (!abort.signal.aborted) {
-        setResult({
+        show({
           mode: 'rules',
           created: Date.now(),
           detail: failure,
           view: ruleReasoning(decision),
         })
-        setOpen(true)
       }
     } finally {
-      if (!abort.signal.aborted) {
-        controller.current = null
-        setBusy(false)
-      }
+      if (!abort.signal.aborted) controller.current = null
     }
   }
   return (
@@ -108,7 +113,7 @@ export function ExplanationBox({
         id="explanation"
         className="explain-btn"
         onClick={request}
-        disabled={busy}
+        aria-disabled={busy}
         aria-controls="plan-explanation"
         aria-expanded={result && !reusable ? undefined : open}
         aria-describedby="explanation-privacy"
@@ -125,7 +130,7 @@ export function ExplanationBox({
         Requesting an explanation shares your city, household presets (including defaults)
         and air-quality facts with the planner and, when available, Workers AI.
       </p>
-      <div aria-live="polite" id="plan-explanation">
+      <div aria-live="polite" aria-busy={busy} id="plan-explanation">
         {open && result && (
           <div className="explanation-body">
             <h3>
