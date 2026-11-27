@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import type { AiModels, AiOptions, RateLimit } from '@cloudflare/workers-types'
-import { cities, modeledReading, stale, type Bulletin, type Profile } from '../src/domain'
-import { makeDecision, type HouseholdDecision } from '../src/choices'
-import { decisionContext, interpretReasoning, InvalidReasoningError } from '../src/explanationFacts'
-import { modelDetail, reasoningSchema, ruleDetails, type Explanation } from '../src/contracts'
+import { cities, modeledReading, type Bulletin, type Profile } from '../src/domain'
+import type { HouseholdDecision } from '../src/choices'
+import { interpretReasoning, InvalidReasoningError } from '../src/explanationFacts'
+import { reasoningSchema, type RuleDetailCode } from '../src/contracts'
 
 export type InferenceBindings = {
   AI?: {
@@ -42,27 +42,27 @@ function verifiedReasoning(result: unknown, decision: HouseholdDecision) {
   }
 }
 
-export async function explain(
+export async function inferExplanation(
   env: InferenceBindings,
   b: Bulletin | null,
   p: Profile,
   key: string,
   now: number,
-  decision = makeDecision(b, p, now),
-): Promise<Explanation> {
-  const fresh = b !== null && !stale(b, now)
-  const context = decisionContext(fresh ? b : null, p, decision, now)
-  const rules = (detail: typeof ruleDetails[keyof typeof ruleDetails]): Explanation => ({
-    mode: 'rules', detail, context, created: Date.now(), reasoning: null,
+  decision: HouseholdDecision,
+  evidenceStillMatches: () => boolean,
+) {
+  const rules = (detail: RuleDetailCode) => ({
+    mode: 'rules' as const, detail, created: Date.now(), reasoning: null,
   })
   const reading = modeledReading(b, now)
-  if (!b || reading?.kind !== 'current') return rules(ruleDetails.current)
-  if (!decision.alternative) return rules(ruleDetails.single)
-  if (!env.AI || !env.EXPLANATIONS) return rules(ruleDetails.binding)
+  if (!b || reading?.kind !== 'current') return rules('current')
+  if (!decision.alternative) return rules('single')
+  if (!env.AI || !env.EXPLANATIONS) return rules('binding')
   try {
     const quota = await env.EXPLANATIONS.limit({ key }).catch(() => null)
-    if (!quota) return rules(ruleDetails.unverified)
-    if (!quota.success) return rules(ruleDetails.limit)
+    if (!quota) return rules('unverified')
+    if (!quota.success) return rules('limit')
+    if (!evidenceStillMatches()) return null
     const result = await env.AI.run(
       model,
       {
@@ -91,10 +91,10 @@ export async function explain(
       { signal: AbortSignal.timeout(12000) } satisfies AiOptions,
     ).catch(() => null)
     const reasoning = verifiedReasoning(result, decision)
-    if (!reasoning) return rules(ruleDetails.unverified)
-    return { mode: 'model', context, created: Date.now(), detail: modelDetail, reasoning }
+    if (!reasoning) return rules('unverified')
+    return { mode: 'model' as const, created: Date.now(), detail: 'model' as const, reasoning }
   } catch {
     console.error({ event: 'internal_failure', operation: 'model_explanation' })
-    return rules(ruleDetails.unverified)
+    return rules('unverified')
   }
 }

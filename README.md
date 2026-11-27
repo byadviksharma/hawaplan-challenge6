@@ -41,6 +41,10 @@ npm run preview -- --port 4173 --strictPort
 
 The Worker handles HTTP methods, origins and request bodies in `worker/index.ts`. `worker/air.ts` manages bulletin caching and provider backoff. `worker/explanation.ts` checks the displayed evidence before inference and rechecks it before returning the answer. Provider failures and unexpected internal errors have distinct diagnostic events.
 
+Protocol 2 hashes a shared evidence record in `src/explanationEvidence.ts`. It includes the city, source values and validity, household presets, dated outing and alternative windows, forecast samples and coverage, eligible options, and their evidence IDs. The Worker checks retrieval freshness separately so a new retrieval can confirm the same facts. A verified response carries the digest and stable identifiers. The browser resolves the wording against its own plan.
+
+Keep IDs stable across copy edits. Bump the decision policy version when safety thresholds or the meaning of an ID change. Unversioned clients still verify the original English decision and response labels byte for byte. Preserve that representation while those clients are supported.
+
 ## Accessibility and privacy
 
 Severity and freshness have text labels. Keyboard users can open the hourly table, operate the household and source dialogs, and return focus to the control that opened them. The interface respects reduced-motion preferences.
@@ -70,7 +74,7 @@ CI=1 npm run test:e2e
 
 With `CI=1`, Playwright starts a fresh local preview of the default build. With `HAWAPLAN_LIVE` unset, it runs 57 controlled browser cases. To include the three public Open-Meteo journeys, run `CI=1 HAWAPLAN_LIVE=1 HAWAPLAN_EXPECT_AI=0 npm run test:e2e`. The default build has no AI binding. `HAWAPLAN_EXPECT_AI` controls the test assertion. To use an installed Google Chrome, set `PLAYWRIGHT_CHANNEL=chrome` in the test environment.
 
-| Verified locally | Scope |
+| Public release verification at `e402b908` | Scope |
 | --- | --- |
 | 187 unit and Worker tests passed | Provider and cache validation, freshness, household planning, HTTP and explanation contracts, error diagnostics and fallback behavior. |
 | 60 Playwright tests passed | Production preview in Chrome at 1440 × 1000, 390 × 844 and 320 × 844, including three live Delhi/Bengaluru provider journeys. Model-composed responses used test doubles. |

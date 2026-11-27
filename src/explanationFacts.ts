@@ -2,9 +2,8 @@ import type { ChoiceEvidence, HouseholdDecision } from './choices'
 import type { Explanation, Reasoning } from './contracts'
 import { modeledReading, type Bulletin, type Profile } from './domain'
 
-// Both callers remove stale evidence first. Retrieval time controls freshness,
-// but a second successful retrieval can confirm exactly the same source facts.
-// The decision includes the dated outing, forecast range, coverage and options.
+// Unversioned clients verify these exact bytes, including the public English
+// wording and field order. Keep this projection confined to the old protocol.
 export function decisionContext(
   b: Bulletin | null, p: Profile, d: HouseholdDecision, now: number, format: 'revision' | 'legacy' = 'revision',
 ) {
@@ -15,12 +14,11 @@ export function decisionContext(
   return JSON.stringify([
     source,
     [p.people, p.travel, p.period, p.activity],
-    d,
+    { outing: d.outing, recommended: d.recommended, alternative: d.alternative, basis: d.basis, evidence: d.evidence },
   ])
 }
 
-// A fixed-size request keeps the Worker input bounded. The Worker still builds
-// all facts itself and the browser verifies the full returned decision context.
+// Both protocols independently hash browser and Worker evidence with SHA-256.
 export async function evidenceRevision(context: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(context))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -45,7 +43,7 @@ export function interpretReasoning(d: HouseholdDecision, r: Reasoning) {
 
   const goals = r.prefer.goals.map((id) => fact(d, 'fit', recommended.id, id).text)
   const competing = fact(d, 'fit', alternative.id, r.switchIf.goal).text
-  // A shared benefit cannot explain choosing one option over the other.
+  // Also reject distinct IDs whose wording would render the priorities indistinguishable.
   const sharedPriority = d.evidence.some((f) => f.role === 'fit' && (
     (f.option === alternative.id && (r.prefer.goals.includes(f.id) || goals.includes(f.text))) ||
     (f.option === recommended.id && (f.id === r.switchIf.goal || f.text === competing))

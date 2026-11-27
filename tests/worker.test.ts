@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { defaults, hour, type Bulletin, type Profile } from '../src/domain'
 import { makeDecision } from '../src/choices'
 import { decisionContext, evidenceRevision, resolveExplanation } from '../src/explanationFacts'
-import { explanationSchema, ruleDetails, type Reasoning } from '../src/contracts'
-import { explain, model, type InferenceBindings } from '../worker/ai'
+import { explanationProtocol, explanationSchema, ruleDetails, type Reasoning } from '../src/contracts'
+import { semanticContext } from '../src/explanationEvidence'
+import { model, type InferenceBindings } from '../worker/ai'
 import worker, { getAir, route } from '../worker/index'
 
 const now = Date.parse('2026-11-23T07:30:00+05:30')
@@ -57,6 +58,14 @@ function binding(reply: unknown, allowed = true) {
   return { AI: { run }, EXPLANATIONS: { limit: vi.fn(async () => ({ success: allowed })) } }
 }
 
+async function explain(env: InferenceBindings, air: Bulletin | null, profile: Profile) {
+  vi.spyOn(Date, 'now').mockReturnValue(now)
+  const response = await route(post({ city: 'delhi', valid: air?.valid ?? null, profile }), env,
+    async () => ({ data: air }))
+  expect(response.status).toBe(200)
+  return explanationSchema.parse(await response.json())
+}
+
 function view(answer: Awaited<ReturnType<typeof explain>>, air: Bulletin, p: Profile) {
   const d = makeDecision(air, p, now)
   return resolveExplanation(explanationSchema.parse(answer), d, decisionContext(air, p, d, now))
@@ -67,7 +76,7 @@ describe('grounded household comparisons via the Worker', () => {
     vi.useFakeTimers()
     vi.setSystemTime(now)
     const env = binding(indoorLater)
-    const ai = await explain(env, hazard, play, 'test', now)
+    const ai = await explain(env, hazard, play)
     expect(ai.mode).toBe('model')
     expect(env.AI.run).toHaveBeenCalledOnce()
     expect(env.AI.run).toHaveBeenCalledWith(model, expect.objectContaining({
@@ -103,7 +112,7 @@ describe('grounded household comparisons via the Worker', () => {
   })
 
   it('uses the same bulletin to weigh a short older-adult errand list against consolidating vehicle stops', async () => {
-    const answer = await explain(binding(briefErrands), hazard, errands, 'test', now)
+    const answer = await explain(binding(briefErrands), hazard, errands)
     expect(answer.mode).toBe('model')
     const result = view(answer, hazard, errands)
     expect(result.recommended.title).toMatch(/errand list short/i)
@@ -124,8 +133,8 @@ describe('grounded household comparisons via the Worker', () => {
       switchIf: { option: 'selected-outing', goal: 'keeps-outdoor-activity' },
       cost: 'changes-setting', limit: { option: 'indoor', fact: 'no-indoor-reading' },
     }
-    const preferred = await explain(binding(outside), b, play, 'test', now)
-    const alternate = await explain(binding(inside), b, play, 'test', now)
+    const preferred = await explain(binding(outside), b, play)
+    const alternate = await explain(binding(inside), b, play)
     expect([preferred.mode, alternate.mode]).toEqual(['model', 'model'])
     expect(preferred.context).toBe(alternate.context)
     const first = view(preferred, b, play)
@@ -145,11 +154,11 @@ describe('grounded household comparisons via the Worker', () => {
       switchIf: { option: 'selected-outing', goal: 'keeps-outdoor-activity' },
       cost: 'changes-setting', limit: { option: 'indoor', fact: 'no-indoor-reading' },
     }
-    const atHome = await explain(binding(preference), b, play, 'x', now)
+    const atHome = await explain(binding(preference), b, play)
     expect(atHome.mode).toBe('model')
     expect(view(atHome, b, play).reason).toMatch(/work-from-home/)
     const commuter: Profile = { ...play, travel: 'Public transport' }
-    const trip = await explain(binding(preference), b, commuter, 'x', now)
+    const trip = await explain(binding(preference), b, commuter)
     expect(trip).toMatchObject({ mode: 'rules', detail: ruleDetails.unverified })
     expect(view(trip, b, commuter).reason).not.toMatch(/work-from-home/)
   })
@@ -167,7 +176,7 @@ describe('grounded household comparisons via the Worker', () => {
     ['same option on both sides', { ...indoorLater, switchIf: { option: 'indoor', goal: 'at-home' } }],
     ['oversize output', 'x'.repeat(2001)],
   ])('retains the protective rule fallback on %s', async (_case, bad) => {
-    const answer = await explain(binding(bad), hazard, play, 'test', now)
+    const answer = await explain(binding(bad), hazard, play)
     expect(answer).toMatchObject({ mode: 'rules', reasoning: null, detail: ruleDetails.unverified })
     expect(view(answer, hazard, play).recommended.title).toMatch(/move playtime indoors/i)
   })
@@ -175,14 +184,14 @@ describe('grounded household comparisons via the Worker', () => {
   it('skips inference on stale, incomplete and missing sources, preserving sampled adverse evidence', async () => {
     const env = binding(indoorLater)
     const partial = { ...hazard, hours: [hazard.hours[7]] }
-    const answer = await explain(env, partial, play, 'x', now)
+    const answer = await explain(env, partial, play)
     const single = view(answer, partial, play)
     expect(answer).toMatchObject({ mode: 'rules', detail: ruleDetails.single })
     expect(single.recommended.title).toMatch(/move playtime indoors/i)
     expect(single.alternative).toBeNull()
     expect(single.limitation).toMatch(/complete forecast/)
     for (const air of [null, { ...b, notice: 'cached' as const }, { ...b, aqi: null }]) {
-      expect((await explain(env, air, play, 'x', now)).detail).toBe(ruleDetails.current)
+      expect((await explain(env, air, play)).detail).toBe(ruleDetails.current)
     }
     expect(env.EXPLANATIONS.limit).not.toHaveBeenCalled()
     expect(env.AI.run).not.toHaveBeenCalled()
@@ -190,14 +199,14 @@ describe('grounded household comparisons via the Worker', () => {
 
   it('handles unavailable bindings, rate limits, quota errors and missing completions', async () => {
     const failure = vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect((await explain({}, b, errands, 'x', now)).detail).toBe(ruleDetails.binding)
+    expect((await explain({}, b, errands)).detail).toBe(ruleDetails.binding)
     const denied = binding(briefErrands, false)
-    expect((await explain(denied, b, errands, 'x', now)).detail).toBe(ruleDetails.limit)
+    expect((await explain(denied, b, errands)).detail).toBe(ruleDetails.limit)
     expect(denied.AI.run).not.toHaveBeenCalled()
     const env = binding(briefErrands)
     env.AI.run.mockRejectedValueOnce(Error('quota exceeded')).mockResolvedValueOnce({ choices: [] })
     for (let i = 0; i < 2; i++) {
-      const result = await explain(env, b, errands, 'x', now)
+      const result = await explain(env, b, errands)
       expect(result).toMatchObject({ mode: 'rules', detail: ruleDetails.unverified })
       expect(view(result, b, errands).recommended.title).toMatch(/errand list short/i)
     }
@@ -211,7 +220,7 @@ describe('grounded household comparisons via the Worker', () => {
       get choices() { throw Error('private runtime detail') },
     })
     const failure = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const result = await explain(env, b, errands, 'x', now)
+    const result = await explain(env, b, errands)
     expect(result).toMatchObject({ mode: 'rules', reasoning: null, detail: ruleDetails.unverified })
     expect(JSON.stringify(result)).not.toContain('private runtime detail')
     expect(failure.mock.calls).toEqual([[{ event: 'internal_failure', operation: 'model_explanation' }]])
@@ -225,7 +234,7 @@ describe('grounded household comparisons via the Worker', () => {
         options.signal?.throwIfAborted()
         throw Error('Expected the signal to abort')
       })
-      expect((await explain(env, b, errands, 'local', now)).detail).toBe(ruleDetails.unverified)
+      expect((await explain(env, b, errands)).detail).toBe(ruleDetails.unverified)
       expect(timeout).toHaveBeenCalledWith(12000)
     } finally {
       timeout.mockRestore()
@@ -233,7 +242,7 @@ describe('grounded household comparisons via the Worker', () => {
   })
 
   it('preserves a verified rationale across an identical retrieval and rejects changed source facts or household', async () => {
-    const answer = await explain(binding(indoorLater), hazard, play, 'test', now)
+    const answer = await explain(binding(indoorLater), hazard, play)
     expect(view(answer, { ...hazard, retrieved: now + 1 }, play)).toEqual(view(answer, hazard, play))
     for (const revised of [
       { ...hazard, city: 'noida' as const }, { ...hazard, valid: now - 1 },
@@ -426,6 +435,25 @@ describe('Worker HTTP boundary', () => {
     })
     expect((await route(post(request), env, load)).status).toBe(409)
     expect(env.AI.run).toHaveBeenCalledOnce()
+  })
+  it('withholds inference when valid evidence expires while awaiting the rate limiter', async () => {
+    vi.useFakeTimers({ now })
+    const env = binding(briefErrands)
+    const data = { ...b, retrieved: now - hour }
+    const decision = makeDecision(data, errands, now)
+    const revision = await evidenceRevision(semanticContext(data.city, data, errands, decision, now))
+    env.EXPLANATIONS.limit.mockImplementationOnce(async () => {
+      vi.setSystemTime(now + 1)
+      return { success: true }
+    })
+    const response = await route(post({
+      protocol: explanationProtocol, city: data.city, profile: errands,
+      valid: data.valid, retrieved: data.retrieved, revision,
+    }), env, async () => ({ data }))
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'changed' })
+    expect(env.EXPLANATIONS.limit).toHaveBeenCalledOnce()
+    expect(env.AI.run).not.toHaveBeenCalled()
   })
   it('rejects an expired browser retrieval before and after inference despite a fresh Worker copy', async () => {
     vi.useFakeTimers()

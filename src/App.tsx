@@ -27,7 +27,7 @@ import {
   type Profile,
 } from './domain'
 import { makeHouseholdPlan } from './choices'
-import { decisionContext } from './explanationFacts'
+import { semanticContext } from './explanationEvidence'
 import { Forecast } from './Forecast'
 import { Guide } from './Guide'
 import { ExplanationBox } from './Explanation'
@@ -199,7 +199,7 @@ function Edition({
   const old = !!data && stale(data, now)
   const evidence = old ? null : data
   const { timeline, decision } = makeHouseholdPlan(evidence, profile, now)
-  const context = decisionContext(evidence, profile, decision, now)
+  const context = semanticContext(city, evidence, profile, decision, now)
   const day = (start: number) =>
     dateIST(start) === dateIST(now) ? 'Today' : 'Tomorrow'
   const { outing } = decision

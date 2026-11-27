@@ -1,10 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
-import { createHash } from 'node:crypto'
-import { makeDecision } from '../src/choices'
-import { ruleDetails } from '../src/contracts'
 import type { Bulletin, Profile } from '../src/domain'
-import { decisionContext } from '../src/explanationFacts'
+import { sourceRevision } from './evidence'
 import { screenshot } from './screenshot'
 
 const at = (time: string) => Date.parse('2026-11-24T' + time + ':00+05:30')
@@ -35,11 +32,11 @@ test('12:05 playtime distinguishes the earlier hazardous forecast, later moderat
   await page.route('**/api/explain', async route => {
     // Supply only the rules envelope. The browser resolves all the action text.
     const { revision, profile } = route.request().postDataJSON()
-    const context = decisionContext(bulletin, profile, makeDecision(bulletin, profile, noonCheck), noonCheck)
+    const expected = sourceRevision(bulletin, profile, noonCheck)
     revisions.push(revision)
-    sourceRevisions.push(createHash('sha256').update(context).digest('hex'))
+    sourceRevisions.push(expected)
     await route.fulfill({ json: {
-      mode: 'rules', reasoning: null, detail: ruleDetails.current, created: noonCheck, context,
+      protocol: 2, mode: 'rules', reasoning: null, detail: 'current', created: noonCheck, revision: expected,
     } })
   })
 

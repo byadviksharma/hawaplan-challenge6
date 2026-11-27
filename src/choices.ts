@@ -1,6 +1,6 @@
 import {
   category, comparablePeriod, currentDuring, dateIST, hour, materiallyLower,
-  windowForecast, windowsThroughTomorrow, type Bulletin, type Profile,
+  windowForecast, windowsThroughTomorrow, type Bulletin, type PlanningWindow, type Profile, type WindowForecast,
 } from './domain'
 import { actionLabel, makePlan, type Action } from './plan'
 
@@ -15,6 +15,7 @@ export type HouseholdDecision = {
   outing: Action
   recommended: ChoiceOption
   alternative: ChoiceOption | null
+  laterWindow?: PlanningWindow & { forecast: WindowForecast }
   basis: string
   evidence: ChoiceEvidence[]
 }
@@ -77,7 +78,7 @@ function laterOption(b: Bulletin, p: Profile, outing: Action, now: number) {
       tradeoff: { 'changes-period': 'This would move the outing beyond your chosen period.' },
       limit: { 'recheck-later': 'Check the forecast again before changing your plans.' },
     }
-    return { option, basis: 'The ' + when + ' has a regional forecast of ' +
+    return { option, window: { ...w, forecast: f }, basis: 'The ' + when + ' has a regional forecast of ' +
       range + ' US AQI (' + category(f.high).label + ' at the high end).' }
   }
   return null
@@ -186,6 +187,7 @@ function decideOuting(
     const later = laterOption(b, p, outing, now)
     if (later) {
       alternative = later.option
+      decision.laterWindow = later.window
       // Both options are outdoors here. Only the scheduled outing keeps the
       // preferred time, and only the later one offers the lower forecast.
       if (!outing.caution) primary.fit = { 'keeps-period': 'keeping the outing in your chosen period' }

@@ -1,11 +1,9 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page, type Route } from '@playwright/test'
-import { makeDecision } from '../src/choices'
 import { ruleDetails } from '../src/contracts'
 import { type Bulletin, type Profile } from '../src/domain'
-import { decisionContext } from '../src/explanationFacts'
+import { sourceRevision } from './evidence'
 import { screenshot } from './screenshot'
-import { playtimeRevisions } from '../tests/fixtures/playtimeRevisions'
 
 const at = (time: string) => Date.parse('2026-11-24T' + time + '+05:30')
 const family: Profile = {
@@ -18,6 +16,12 @@ const bulletin: Bulletin = {
   city: 'delhi', valid: at('11:30:00'), retrieved: at('12:25:00'),
   aqi: 352, pm25: null, pm10: null,
   hours: forecast.map(([time, aqi]) => ({ time: at(time + ':00'), aqi })),
+}
+
+// Protocol 2 reference digests for this fixed bulletin, immediately before and at expiry.
+const playtimeRevisions = {
+  current: '10cf0fe1d17c079dfdf40605c2644880b3cc8bfdf0a0a88408b1845974803c87',
+  earlier: 'de68b9a639120fcf9f9a44b0df2ce5d5b5c60225fd59f32ae68f032a8225e65b',
 }
 
 async function openBulletin(page: Page, now: number, data: Bulletin) {
@@ -33,11 +37,10 @@ async function openBulletin(page: Page, now: number, data: Bulletin) {
     const { profile, revision } = route.request().postDataJSON()
     const workerTime = await page.evaluate(() => Date.now())
     // Rebuild the rules envelope from source facts at the simulated Worker time.
-    const decision = makeDecision(data, profile, workerTime)
-    const context = decisionContext(data, profile, decision, workerTime)
-    const detail = workerTime < at('12:30:00') ? ruleDetails.single : ruleDetails.current
+    const expected = sourceRevision(data, profile, workerTime)
+    const detail = workerTime < at('12:30:00') ? 'single' : 'current'
     requests.browserRevisions.push(revision)
-    await route.fulfill({ json: { mode: 'rules', reasoning: null, created: workerTime, detail, context } })
+    await route.fulfill({ json: { protocol: 2, mode: 'rules', reasoning: null, created: workerTime, detail, revision: expected } })
   })
   await page.goto('/')
   await expect(page.getByTestId('aqi')).toHaveText('352')
@@ -187,9 +190,9 @@ test('a pending explanation keeps keyboard focus and its late reply cannot repla
   await page.keyboard.press('Enter')
   await expect(result).toContainText(ruleDetails.current)
   const updatedText = await result.innerText()
-  const earlierContext = decisionContext(bulletin, family, makeDecision(bulletin, family, start), start)
+  const oldRevision = sourceRevision(bulletin, family, start)
   await earlier.fulfill({ json: {
-    mode: 'rules', detail: ruleDetails.single, reasoning: null, created: start, context: earlierContext,
+    protocol: 2, mode: 'rules', detail: 'single', reasoning: null, created: start, revision: oldRevision,
   } })
   // A canceled fetch has no response. Otherwise wait for the old body to finish.
   const response = await earlier.request().response()

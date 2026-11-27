@@ -1,14 +1,14 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { BookOpen, ArrowUpRight } from 'lucide-react'
 import { modeledReading, type Bulletin, type City, type Profile, stamp } from './domain'
-import { explanationSchema, ruleDetails } from './contracts'
+import { explanationProtocol, modelDetail, ruleDetails, semanticExplanationSchema, type SemanticExplanation } from './contracts'
 import type { HouseholdDecision } from './choices'
-import { evidenceRevision, resolveExplanation, ruleReasoning } from './explanationFacts'
+import { evidenceRevision, interpretReasoning, ruleReasoning } from './explanationFacts'
 
 type Result = {
   mode: 'model' | 'rules'
   created: number
-  detail: string
+  detail: SemanticExplanation['detail'] | 'changed' | 'unavailable' | 'invalid'
   view: ReturnType<typeof ruleReasoning>
 }
 type ExplanationState = {
@@ -17,8 +17,12 @@ type ExplanationState = {
   open: boolean
   busy: boolean
 }
-const changed = 'Conditions changed. Refresh the bulletin for a new explanation.'
-const unavailable = 'The explanation service is unavailable.'
+const details = {
+  ...ruleDetails, model: modelDetail,
+  changed: 'Conditions changed. Refresh the bulletin for a new explanation.',
+  unavailable: 'The explanation service is unavailable.',
+  invalid: 'The explanation could not be verified.',
+}
 
 export function ExplanationBox({
   city,
@@ -43,8 +47,8 @@ export function ExplanationBox({
   const { result, open, busy } = state ?? { result: null, open: false, busy: false }
   const controller = useRef<AbortController | null>(null)
   const reusable = result && (
-    result.mode === 'model' || result.detail === ruleDetails.current ||
-    result.detail === ruleDetails.single || result.detail === ruleDetails.binding
+    result.mode === 'model' || result.detail === 'current' ||
+    result.detail === 'single' || result.detail === 'binding'
   )
   useLayoutEffect(() => () => {
     controller.current?.abort()
@@ -63,7 +67,7 @@ export function ExplanationBox({
     onRequest()
     setState({ context, result, open, busy: true })
     const show = (result: Result) => setState({ context, result, open: true, busy: false })
-    let failure = unavailable
+    let failure: Result['detail'] = 'unavailable'
     try {
       const revision = await evidenceRevision(context)
       if (abort.signal.aborted) return
@@ -71,7 +75,7 @@ export function ExplanationBox({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          city, profile, revision,
+          protocol: explanationProtocol, city, profile, revision,
           valid: data?.valid ?? null,
           retrieved: data?.retrieved ?? null,
         }),
@@ -84,15 +88,15 @@ export function ExplanationBox({
         return
       }
       if (!res.ok) throw Error()
-      failure = 'The explanation could not be verified.'
-      const answer = explanationSchema.parse(await res.json())
+      failure = 'invalid'
+      const answer = semanticExplanationSchema.parse(await res.json())
       if (abort.signal.aborted) return
-      if (answer.context !== context) {
-        failure = changed
+      if (answer.revision !== revision) {
+        failure = 'changed'
         throw Error()
       }
       const { mode, detail, created } = answer
-      const view = resolveExplanation(answer, decision, context)
+      const view = mode === 'model' ? interpretReasoning(decision, answer.reasoning) : ruleReasoning(decision)
       show({ mode, detail, created, view })
     } catch {
       if (!abort.signal.aborted) {
@@ -162,7 +166,7 @@ export function ExplanationBox({
               </p>
             )}
             <p className="fine">
-              {result.detail} · Prepared {stamp(result.created)}
+              {details[result.detail]} · Prepared {stamp(result.created)}
             </p>
           </div>
         )}

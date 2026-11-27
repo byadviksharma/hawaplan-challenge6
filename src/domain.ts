@@ -206,6 +206,11 @@ export function earlierForecastText(p: ForecastReading) {
     p.aqi + ' US AQI (' + category(p.aqi).label + ').'
 }
 
+export function windowSamples(b: Bulletin, now: number, start: number, end: number) {
+  const from = Math.max(start, now)
+  return b.hours.filter(p => p.time >= start && p.time > from - hour && p.time < end)
+}
+
 export function windowForecast(
   b: Bulletin | null,
   now: number,
@@ -220,13 +225,7 @@ export function windowForecast(
   const previous = recent && recent.time < start && recent.aqi !== null
     ? { time: recent.time, aqi: recent.aqi }
     : undefined
-  const values = b.hours.filter(
-    (p): p is { time: number; aqi: number } =>
-      p.aqi !== null &&
-      p.time >= start &&
-      p.time > from - hour &&
-      p.time < end,
-  )
+  const values = windowSamples(b, now, start, end).filter((p): p is ForecastReading => p.aqi !== null)
   if (!values.length) return previous ? { ...missing, previous } : missing
   const first = values[0].time
   // A future period is a broad forecast. Once it starts, the first point

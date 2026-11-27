@@ -3,8 +3,8 @@ import AxeBuilder from '@axe-core/playwright'
 import { screenshot } from './screenshot'
 import { stamp, type Bulletin, type City, type Profile } from '../src/domain'
 import { makeDecision } from '../src/choices'
-import { explanationSchema, modelDetail, ruleDetails, type Explanation } from '../src/contracts'
-import { decisionContext } from '../src/explanationFacts'
+import { semanticExplanationSchema, ruleDetails, type SemanticExplanation } from '../src/contracts'
+import { sourceRevision } from './evidence'
 const hour = 3600000
 const morning = Date.parse('2026-11-24T08:30:00+05:30')
 // Synthetic data remains inside browser tests. Live evidence below uses no routes.
@@ -36,13 +36,14 @@ async function mockData(page: Page) {
 }
 async function expectWorkerRules(page: Page, response: Response) {
   expect(response.status()).toBe(200)
-  const answer = explanationSchema.parse(await response.json())
-  expect(answer.mode).toBe('rules')
+  const answer = semanticExplanationSchema.parse(await response.json())
+  expect(answer.revision).toBe(response.request().postDataJSON().revision)
+  if (answer.mode !== 'rules') throw new Error('Expected a rule-based explanation')
   const box = page.locator('.explanation-body')
   await expect(box.getByRole('heading', { name: 'Rule-based explanation', exact: true })).toBeVisible()
   const detail = box.locator('.fine')
   await expect(detail).toBeVisible()
-  await expect(detail).toHaveText(answer.detail + ' · Prepared ' + stamp(answer.created))
+  await expect(detail).toHaveText(ruleDetails[answer.detail] + ' · Prepared ' + stamp(answer.created))
   return answer
 }
 test('household changes actions and persists; city, table, guide and accessible controls work', async ({
@@ -151,7 +152,7 @@ test('honest loading, retry, missing values, stale and offline', async ({
   await page.getByRole('button', { name: 'Explain my plan' }).click()
   const response = await reply
   expect(response.request().postDataJSON()).toMatchObject({ valid: null, retrieved: null })
-  expect((await expectWorkerRules(page, response)).detail).toBe(ruleDetails.current)
+  expect((await expectWorkerRules(page, response)).detail).toBe('current')
   const staleExplanation = page.locator('.explanation-body')
   await expect(staleExplanation).toContainText(/recheck|fresh forecast/i)
   await expect(staleExplanation.getByText('Alternative', { exact: true })).toHaveCount(0)
@@ -171,9 +172,9 @@ test('a fresh forecast with an earlier AQI shows the Worker’s current-AQI fall
   // Replay the current-AQI contract while the hourly outlook is still usable.
   await page.route('**/api/explain', route => {
     const { profile } = route.request().postDataJSON()
-    const context = decisionContext(data, profile, makeDecision(data, profile, morning), morning)
+    const revision = sourceRevision(data, profile, morning)
     return route.fulfill({ json: {
-      mode: 'rules', reasoning: null, detail: ruleDetails.current, created: morning, context,
+      protocol: 2, mode: 'rules', reasoning: null, detail: 'current', created: morning, revision,
     } })
   })
   await page.goto('/')
@@ -182,7 +183,7 @@ test('a fresh forecast with an earlier AQI shows the Worker’s current-AQI fall
   const reply = page.waitForResponse('**/api/explain')
   await page.getByRole('button', { name: 'Explain my plan' }).click()
   const answer = await expectWorkerRules(page, await reply)
-  expect(answer.detail).toBe(ruleDetails.current)
+  expect(answer.detail).toBe('current')
 })
 test('invalid cached presets recover and late city data cannot replace the next city', async ({
   page,
@@ -384,17 +385,18 @@ test('two households compare feasible choices on the same bulletin (model double
   const recommended = box.locator('dt').filter({ hasText: /^Recommended$/ }).locator('+ dd')
   const alternative = box.locator('dt').filter({ hasText: /^Alternative$/ }).locator('+ dd')
   let mode: 'valid' | 'swap' | 'changed' | 'offline' | 'unsupported' = 'valid'
-  let previous: Explanation | undefined
+  let previous: SemanticExplanation | undefined
   const requests: Profile[] = []
   await page.route('**/api/explain', async (r) => {
     if (mode === 'offline') return r.abort()
     if (mode === 'changed') return r.fulfill({ json: previous })
     const { profile } = r.request().postDataJSON() as { profile: Profile }
-    const answer: Explanation = {
+    const answer: SemanticExplanation = {
       created: morning,
-      context: decisionContext(data, profile, makeDecision(data, profile, morning), morning),
+      protocol: 2,
+      revision: sourceRevision(data, profile, morning),
       mode: 'model',
-      detail: modelDetail,
+      detail: 'model',
       reasoning: modelChoiceFixture(profile),
     }
     if (mode === 'swap') {
@@ -565,7 +567,9 @@ test('live provider, source times, city switch and Worker explanation', async ({
   await expect(page.getByRole('dialog')).toContainText('Retrieved')
   await screenshot(page, info.project.name + '-source')
   await page.keyboard.press('Escape')
+  const bengaluruReply = page.waitForResponse('**/api/air?city=bengaluru')
   await page.getByLabel('Change city').selectOption('bengaluru')
+  const bengaluru = await (await bengaluruReply).json() as Bulletin
   await expect(
     page.getByText('Modeled estimate', { exact: true }),
   ).toBeVisible()
@@ -614,7 +618,9 @@ test('live provider, source times, city switch and Worker explanation', async ({
     await screenshot(page, info.project.name + '-live-ai')
   } else {
     const answer = await expectWorkerRules(page, explanationResponse)
-    const [, , decision] = JSON.parse(answer.context)
+    const profile = explanationResponse.request().postDataJSON().profile as Profile
+    expect(answer.revision).toBe(sourceRevision(bengaluru, profile, answer.created))
+    const decision = makeDecision(bengaluru, profile, answer.created)
     expect(decision.outing).toMatchObject({ kind: 'outing', period: 'Evening' })
     await expect(outing.getByRole('heading')).toHaveText(decision.outing.title)
     await expect(outing.locator('time')).toHaveAttribute('datetime', new Date(decision.outing.start).toISOString())

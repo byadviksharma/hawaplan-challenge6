@@ -1,9 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
-import { makeDecision } from '../src/choices'
-import { modelDetail, ruleDetails } from '../src/contracts'
 import { defaults, hour, type Bulletin } from '../src/domain'
-import { decisionContext } from '../src/explanationFacts'
+import { sourceRevision } from './evidence'
 import { screenshot } from './screenshot'
 
 const morning = Date.parse('2026-11-24T08:30:00+05:30')
@@ -28,8 +26,8 @@ async function mockModel(page: Page, data: Bulletin, now: number) {
     requests++
     const profile = route.request().postDataJSON().profile
     await route.fulfill({ json: {
-      mode: 'model', created: now, detail: modelDetail,
-      context: decisionContext(data, profile, makeDecision(data, profile, now), now),
+      protocol: 2, mode: 'model', created: now, detail: 'model',
+      revision: sourceRevision(data, profile, now),
       reasoning: {
         prefer: { option: 'selected-outing', goals: ['keeps-outdoor-activity'] },
         switchIf: { option: 'indoor', goal: 'indoor-activity' },
@@ -151,8 +149,8 @@ test('revised source validity and same-timestamp hourly forecasts invalidate the
   let data = bulletin()
   await page.route('**/api/air?*', route => route.fulfill({ json: data }))
   await page.route('**/api/explain', route => route.fulfill({ json: {
-    mode: 'rules', created: morning, detail: ruleDetails.binding, reasoning: null,
-    context: decisionContext(data, defaults, makeDecision(data, defaults, morning), morning),
+    protocol: 2, mode: 'rules', created: morning, detail: 'binding', reasoning: null,
+    revision: sourceRevision(data, defaults, morning),
   } }))
   await page.goto('/')
   const box = page.locator('.explanation-body')
@@ -213,8 +211,8 @@ test('crossing noon in an open bulletin retires the previous morning decision', 
   await setClock(page, now)
   await page.route('**/api/air?*', route => route.fulfill({ json: data }))
   await page.route('**/api/explain', route => route.fulfill({ json: {
-    mode: 'rules', detail: ruleDetails.single, created: now, reasoning: null,
-    context: decisionContext(data, defaults, makeDecision(data, defaults, now), now),
+    protocol: 2, mode: 'rules', detail: 'single', created: now, reasoning: null,
+    revision: sourceRevision(data, defaults, now),
   } }))
   await page.goto('/')
   await expect(current(page)).toBeVisible()
@@ -264,8 +262,8 @@ test('bulletin links, disclosure, source readings and the midnight marker work a
   await page.clock.setFixedTime(morning)
   await page.route('**/api/air?*', route => route.fulfill({ json: data }))
   await page.route('**/api/explain', route => route.fulfill({ json: {
-    mode: 'rules', created: morning, detail: ruleDetails.single, reasoning: null,
-    context: decisionContext(data, defaults, makeDecision(data, defaults, morning), morning),
+    protocol: 2, mode: 'rules', created: morning, detail: 'single', reasoning: null,
+    revision: sourceRevision(data, defaults, morning),
   } }))
   await page.goto('/')
   await expect(page).toHaveURL(/\/$/)

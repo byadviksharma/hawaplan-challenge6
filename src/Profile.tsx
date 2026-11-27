@@ -86,7 +86,7 @@ export function ProfileForm({
               aria-describedby={key === 'period' ? 'outing-help' : undefined}
             >
               {profileSchema.shape[key].options.map((option) => (
-                <option key={option}>{option}</option>
+                <option key={option} value={option}>{option}</option>
               ))}
             </select>
             {key === 'period' && (
